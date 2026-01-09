@@ -1,365 +1,466 @@
-"""Sprite class representing a remote sprite instance."""
+"""
+Sprite class representing a sprite instance
+"""
 
-from __future__ import annotations
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from datetime import datetime
+import httpx
 
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, BinaryIO
-
-from sprites.exec import Cmd, CompletedProcess, run
-from sprites.types import SpriteInfo
+from .types import (
+    SpriteConfig,
+    URLSettings,
+    Checkpoint,
+    Session,
+    NetworkPolicy,
+    PolicyRule,
+    ServiceWithState,
+    ServiceRequest,
+    ServiceState,
+)
+from .exceptions import (
+    SpriteError,
+    NetworkError,
+    NotFoundError,
+)
 
 if TYPE_CHECKING:
-    from sprites.checkpoint import CheckpointStream, RestoreStream
-    from sprites.client import SpritesClient
-    from sprites.services import ServiceStream
-    from sprites.session import KillStream
-    from sprites.types import Checkpoint, NetworkPolicy, ServiceWithState, Session
+    from .client import SpritesClient
+    from .filesystem import SpriteFilesystem
 
 
-@dataclass
 class Sprite:
     """Represents a sprite instance."""
 
-    name: str
-    client: SpritesClient
-    info: SpriteInfo | None = None
-
-    def command(
-        self,
-        *args: str,
-        env: dict[str, str] | None = None,
-        cwd: str | None = None,
-        stdin: BinaryIO | None = None,
-        stdout: BinaryIO | None = None,
-        stderr: BinaryIO | None = None,
-        tty: bool = False,
-        tty_rows: int = 24,
-        tty_cols: int = 80,
-        timeout: float | None = None,
-    ) -> Cmd:
-        """Create a command to run on this sprite (Go SDK style).
+    def __init__(self, name: str, client: "SpritesClient"):
+        """
+        Initialize a Sprite instance.
 
         Args:
-            *args: Command and arguments (first arg is the command name).
-            env: Environment variables to set.
-            cwd: Working directory for the command.
-            stdin: File-like object to read stdin from.
-            stdout: File-like object to write stdout to.
-            stderr: File-like object to write stderr to.
-            tty: Enable TTY/pseudo-terminal mode.
-            tty_rows: Terminal height (rows).
-            tty_cols: Terminal width (columns).
-            timeout: Command timeout in seconds.
-
-        Returns:
-            A Cmd object that can be used to execute the command.
+            name: Sprite name
+            client: SpritesClient instance
         """
-        return Cmd(
-            sprite=self,
-            args=list(args),
-            env=env,
-            cwd=cwd,
-            stdin=stdin,
-            stdout=stdout,
-            stderr=stderr,
-            tty=tty,
-            tty_rows=tty_rows,
-            tty_cols=tty_cols,
-            timeout=timeout,
-        )
+        self.name = name
+        self.client = client
 
-    def run(
-        self,
-        *args: str,
-        capture_output: bool = False,
-        timeout: float | None = None,
-        check: bool = False,
-        env: dict[str, str] | None = None,
-        cwd: str | None = None,
-        tty: bool = False,
-        tty_rows: int = 24,
-        tty_cols: int = 80,
-    ) -> CompletedProcess:
-        """Run a command and wait for completion (subprocess.run style).
+        # Additional properties from API
+        self.id: Optional[str] = None
+        self.organization_name: Optional[str] = None
+        self.status: Optional[str] = None
+        self.config: Optional[SpriteConfig] = None
+        self.environment: Optional[Dict[str, str]] = None
+        self.created_at: Optional[datetime] = None
+        self.updated_at: Optional[datetime] = None
+        self.bucket_name: Optional[str] = None
+        self.primary_region: Optional[str] = None
+        self.url: Optional[str] = None
+        self.url_settings: Optional[URLSettings] = None
+
+    def _update_from_info(self, info: Dict[str, Any]) -> None:
+        """Update sprite properties from API response."""
+        self.id = info.get("id")
+        self.organization_name = info.get("organization")
+        self.status = info.get("status")
+        self.url = info.get("url")
+        self.primary_region = info.get("primary_region")
+        self.bucket_name = info.get("bucket_name")
+
+        if "created_at" in info and info["created_at"]:
+            try:
+                self.created_at = datetime.fromisoformat(
+                    info["created_at"].replace("Z", "+00:00")
+                )
+            except (ValueError, AttributeError):
+                pass
+
+        if "updated_at" in info and info["updated_at"]:
+            try:
+                self.updated_at = datetime.fromisoformat(
+                    info["updated_at"].replace("Z", "+00:00")
+                )
+            except (ValueError, AttributeError):
+                pass
+
+    def _headers(self) -> Dict[str, str]:
+        """Get default headers with authorization."""
+        return {
+            "Authorization": f"Bearer {self.client.token}",
+            "Content-Type": "application/json",
+        }
+
+    def _base_url(self) -> str:
+        """Get sprite-specific base URL."""
+        return f"{self.client.base_url}/v1/sprites/{self.name}"
+
+    # ========== Filesystem API ==========
+
+    def filesystem(self, working_dir: str = "/") -> "SpriteFilesystem":
+        """
+        Get a filesystem interface for the sprite.
 
         Args:
-            *args: Command and arguments.
-            capture_output: Capture stdout and stderr.
-            timeout: Timeout in seconds.
-            check: Raise ExitError if command returns non-zero.
-            env: Environment variables.
-            cwd: Working directory.
-            tty: Enable TTY mode.
-            tty_rows: Terminal rows.
-            tty_cols: Terminal columns.
+            working_dir: Working directory to use as root (default: "/")
 
         Returns:
-            CompletedProcess with results.
+            SpriteFilesystem instance that supports pathlib.Path-like operations
         """
-        return run(
-            self,
-            *args,
-            capture_output=capture_output,
-            timeout=timeout,
-            check=check,
-            env=env,
-            cwd=cwd,
-            tty=tty,
-            tty_rows=tty_rows,
-            tty_cols=tty_cols,
-        )
+        from .filesystem import SpriteFilesystem
+        return SpriteFilesystem(self, working_dir)
 
-    def attach_session(
-        self,
-        session_id: str,
-        *,
-        stdin: BinaryIO | None = None,
-        stdout: BinaryIO | None = None,
-        stderr: BinaryIO | None = None,
-        timeout: float | None = None,
-    ) -> Cmd:
-        """Attach to an existing session.
-
-        Args:
-            session_id: The ID of the session to attach to.
-            stdin: File-like object to read stdin from.
-            stdout: File-like object to write stdout to.
-            stderr: File-like object to write stderr to.
-            timeout: Command timeout in seconds.
-
-        Returns:
-            A Cmd object for the attached session.
-        """
-        return Cmd(
-            sprite=self,
-            args=[],
-            session_id=session_id,
-            stdin=stdin,
-            stdout=stdout,
-            stderr=stderr,
-            timeout=timeout,
-        )
+    # ========== Lifecycle API ==========
 
     def delete(self) -> None:
         """Delete this sprite."""
         self.client.delete_sprite(self.name)
 
     def destroy(self) -> None:
-        """Destroy this sprite (alias for delete)."""
+        """Alias for delete()."""
         self.delete()
 
-    # Checkpoint operations
+    def upgrade(self) -> None:
+        """Upgrade this sprite to the latest version."""
+        self.client.upgrade_sprite(self.name)
 
-    def list_checkpoints(self, history_filter: str = "") -> list[Checkpoint]:
-        """List all checkpoints for this sprite.
+    def update_url_settings(self, settings: URLSettings) -> None:
+        """
+        Update URL authentication settings.
 
         Args:
-            history_filter: Optional filter for checkpoint history.
+            settings: URL settings with auth: "public" for no auth, "sprite" for authenticated
+        """
+        self.client.update_url_settings(self.name, settings)
+
+    # ========== Sessions API ==========
+
+    def list_sessions(self) -> List[Session]:
+        """
+        List active sessions.
 
         Returns:
-            List of checkpoint objects.
+            List of Session objects
         """
-        from sprites.checkpoint import list_checkpoints
+        try:
+            response = self.client._client.get(
+                f"{self._base_url()}/exec",
+                headers=self._headers(),
+            )
+        except httpx.RequestError as e:
+            raise NetworkError(f"Network error listing sessions: {e}")
 
-        return list_checkpoints(self, history_filter)
+        if not response.is_success:
+            raise SpriteError(
+                f"Failed to list sessions (status {response.status_code}): {response.text}"
+            )
+
+        result = response.json()
+        sessions: List[Session] = []
+
+        for s in result.get("sessions", []):
+            last_activity = None
+            if s.get("last_activity"):
+                try:
+                    last_activity = datetime.fromisoformat(
+                        s["last_activity"].replace("Z", "+00:00")
+                    )
+                except (ValueError, AttributeError):
+                    pass
+
+            created = datetime.now()
+            if s.get("created"):
+                try:
+                    created = datetime.fromisoformat(
+                        s["created"].replace("Z", "+00:00")
+                    )
+                except (ValueError, AttributeError):
+                    pass
+
+            sessions.append(Session(
+                id=s.get("id", ""),
+                command=s.get("command", ""),
+                workdir=s.get("workdir", ""),
+                created=created,
+                bytes_per_second=s.get("bytes_per_second", 0),
+                is_active=s.get("is_active", False),
+                tty=s.get("tty", False),
+                last_activity=last_activity,
+            ))
+
+        return sessions
+
+    # ========== Checkpoint API ==========
+
+    def list_checkpoints(self, history_filter: Optional[str] = None) -> List[Checkpoint]:
+        """
+        List checkpoints.
+
+        Args:
+            history_filter: Optional filter for checkpoint history
+
+        Returns:
+            List of Checkpoint objects
+        """
+        url = f"{self._base_url()}/checkpoints"
+        params = {}
+        if history_filter:
+            params["history"] = history_filter
+
+        try:
+            response = self.client._client.get(
+                url,
+                headers=self._headers(),
+                params=params if params else None,
+            )
+        except httpx.RequestError as e:
+            raise NetworkError(f"Network error listing checkpoints: {e}")
+
+        if not response.is_success:
+            raise SpriteError(
+                f"Failed to list checkpoints (status {response.status_code}): {response.text}"
+            )
+
+        raw = response.json()
+        checkpoints: List[Checkpoint] = []
+
+        for cp in raw:
+            create_time = datetime.now()
+            if cp.get("create_time"):
+                try:
+                    create_time = datetime.fromisoformat(
+                        cp["create_time"].replace("Z", "+00:00")
+                    )
+                except (ValueError, AttributeError):
+                    pass
+
+            checkpoints.append(Checkpoint(
+                id=cp.get("id", ""),
+                create_time=create_time,
+                comment=cp.get("comment"),
+                history=cp.get("history"),
+            ))
+
+        return checkpoints
 
     def get_checkpoint(self, checkpoint_id: str) -> Checkpoint:
-        """Get a specific checkpoint.
+        """
+        Get checkpoint details.
 
         Args:
-            checkpoint_id: The ID of the checkpoint.
+            checkpoint_id: Checkpoint ID
 
         Returns:
-            The checkpoint object.
+            Checkpoint object
         """
-        from sprites.checkpoint import get_checkpoint
+        try:
+            response = self.client._client.get(
+                f"{self._base_url()}/checkpoints/{checkpoint_id}",
+                headers=self._headers(),
+            )
+        except httpx.RequestError as e:
+            raise NetworkError(f"Network error getting checkpoint: {e}")
 
-        return get_checkpoint(self, checkpoint_id)
+        if response.status_code == 404:
+            raise NotFoundError(f"Checkpoint not found: {checkpoint_id}")
 
-    def create_checkpoint(self, comment: str = "") -> CheckpointStream:
-        """Create a new checkpoint.
+        if not response.is_success:
+            raise SpriteError(
+                f"Failed to get checkpoint (status {response.status_code}): {response.text}"
+            )
+
+        cp = response.json()
+        create_time = datetime.now()
+        if cp.get("create_time"):
+            try:
+                create_time = datetime.fromisoformat(
+                    cp["create_time"].replace("Z", "+00:00")
+                )
+            except (ValueError, AttributeError):
+                pass
+
+        return Checkpoint(
+            id=cp.get("id", ""),
+            create_time=create_time,
+            comment=cp.get("comment"),
+            history=cp.get("history"),
+        )
+
+    # ========== Services API ==========
+
+    def list_services(self) -> List[ServiceWithState]:
+        """
+        List all services on this sprite.
+
+        Returns:
+            List of ServiceWithState objects
+        """
+        try:
+            response = self.client._client.get(
+                f"{self._base_url()}/services",
+                headers=self._headers(),
+            )
+        except httpx.RequestError as e:
+            raise NetworkError(f"Network error listing services: {e}")
+
+        if not response.is_success:
+            raise SpriteError(
+                f"Failed to list services (status {response.status_code}): {response.text}"
+            )
+
+        data = response.json()
+        services: List[ServiceWithState] = []
+
+        for s in data.get("services", []):
+            state = None
+            if s.get("state"):
+                state = ServiceState(
+                    name=s["state"].get("name", ""),
+                    status=s["state"].get("status", "stopped"),
+                    pid=s["state"].get("pid"),
+                    started_at=s["state"].get("started_at"),
+                    error=s["state"].get("error"),
+                    restart_count=s["state"].get("restart_count", 0),
+                    next_restart_at=s["state"].get("next_restart_at"),
+                )
+
+            services.append(ServiceWithState(
+                name=s.get("name", ""),
+                cmd=s.get("cmd", ""),
+                args=s.get("args", []),
+                needs=s.get("needs", []),
+                http_port=s.get("http_port"),
+                state=state,
+            ))
+
+        return services
+
+    def get_service(self, service_name: str) -> ServiceWithState:
+        """
+        Get a specific service.
 
         Args:
-            comment: Optional comment for the checkpoint.
+            service_name: Service name
 
         Returns:
-            A stream of checkpoint creation messages.
+            ServiceWithState object
         """
-        from sprites.checkpoint import create_checkpoint
+        try:
+            response = self.client._client.get(
+                f"{self._base_url()}/services/{service_name}",
+                headers=self._headers(),
+            )
+        except httpx.RequestError as e:
+            raise NetworkError(f"Network error getting service: {e}")
 
-        return create_checkpoint(self, comment)
+        if response.status_code == 404:
+            raise NotFoundError(f"Service not found: {service_name}")
 
-    def restore_checkpoint(self, checkpoint_id: str) -> RestoreStream:
-        """Restore a checkpoint.
+        if not response.is_success:
+            raise SpriteError(
+                f"Failed to get service (status {response.status_code}): {response.text}"
+            )
+
+        s = response.json()
+        state = None
+        if s.get("state"):
+            state = ServiceState(
+                name=s["state"].get("name", ""),
+                status=s["state"].get("status", "stopped"),
+                pid=s["state"].get("pid"),
+                started_at=s["state"].get("started_at"),
+                error=s["state"].get("error"),
+                restart_count=s["state"].get("restart_count", 0),
+                next_restart_at=s["state"].get("next_restart_at"),
+            )
+
+        return ServiceWithState(
+            name=s.get("name", ""),
+            cmd=s.get("cmd", ""),
+            args=s.get("args", []),
+            needs=s.get("needs", []),
+            http_port=s.get("http_port"),
+            state=state,
+        )
+
+    def delete_service(self, service_name: str) -> None:
+        """
+        Delete a service.
 
         Args:
-            checkpoint_id: The ID of the checkpoint to restore.
-
-        Returns:
-            A stream of restore messages.
+            service_name: Service name
         """
-        from sprites.checkpoint import restore_checkpoint
+        try:
+            response = self.client._client.delete(
+                f"{self._base_url()}/services/{service_name}",
+                headers=self._headers(),
+            )
+        except httpx.RequestError as e:
+            raise NetworkError(f"Network error deleting service: {e}")
 
-        return restore_checkpoint(self, checkpoint_id)
+        if response.status_code != 204 and not response.is_success:
+            raise SpriteError(
+                f"Failed to delete service (status {response.status_code}): {response.text}"
+            )
 
-    # Network policy operations
+    # ========== Policy API ==========
 
     def get_network_policy(self) -> NetworkPolicy:
-        """Get the current network policy.
+        """
+        Get the current network policy.
 
         Returns:
-            The network policy for this sprite.
+            NetworkPolicy object
         """
-        from sprites.policy import get_network_policy
+        try:
+            response = self.client._client.get(
+                f"{self._base_url()}/policy",
+                headers=self._headers(),
+            )
+        except httpx.RequestError as e:
+            raise NetworkError(f"Network error getting network policy: {e}")
 
-        return get_network_policy(self)
+        if not response.is_success:
+            raise SpriteError(
+                f"Failed to get network policy (status {response.status_code}): {response.text}"
+            )
+
+        data = response.json()
+        rules: List[PolicyRule] = []
+
+        for r in data.get("rules", []):
+            rules.append(PolicyRule(
+                domain=r.get("domain"),
+                action=r.get("action"),
+                include=r.get("include"),
+            ))
+
+        return NetworkPolicy(rules=rules)
 
     def update_network_policy(self, policy: NetworkPolicy) -> None:
-        """Update the network policy.
+        """
+        Update the network policy.
 
         Args:
-            policy: The new network policy to set.
+            policy: NetworkPolicy object
         """
-        from sprites.policy import update_network_policy
+        rules = []
+        for r in policy.rules:
+            rule: Dict[str, Any] = {}
+            if r.domain:
+                rule["domain"] = r.domain
+            if r.action:
+                rule["action"] = r.action
+            if r.include:
+                rule["include"] = r.include
+            rules.append(rule)
 
-        update_network_policy(self, policy)
+        try:
+            response = self.client._client.put(
+                f"{self._base_url()}/policy",
+                headers=self._headers(),
+                json={"rules": rules},
+            )
+        except httpx.RequestError as e:
+            raise NetworkError(f"Network error updating network policy: {e}")
 
-    # Session operations
-
-    def list_sessions(self) -> list[Session]:
-        """List active sessions for this sprite.
-
-        Returns:
-            List of active sessions.
-        """
-        from sprites.session import list_sessions
-
-        return list_sessions(self)
-
-    def kill_session(
-        self,
-        session_id: str,
-        signal: str = "SIGTERM",
-        timeout: int = 10,
-    ) -> KillStream:
-        """Kill a session.
-
-        Args:
-            session_id: The ID of the session to kill.
-            signal: The signal to send (default: SIGTERM).
-            timeout: Timeout in seconds before force kill (default: 10).
-
-        Returns:
-            A stream of kill progress messages.
-        """
-        from sprites.session import kill_session
-
-        return kill_session(self, session_id, signal, timeout)
-
-    # Service operations
-
-    def list_services(self) -> list[ServiceWithState]:
-        """List all services for this sprite.
-
-        Returns:
-            List of services with their state.
-        """
-        from sprites.services import list_services
-
-        return list_services(self)
-
-    def get_service(self, name: str) -> ServiceWithState:
-        """Get a specific service.
-
-        Args:
-            name: The name of the service.
-
-        Returns:
-            The service with its state.
-        """
-        from sprites.services import get_service
-
-        return get_service(self, name)
-
-    def create_service(
-        self,
-        name: str,
-        cmd: str,
-        args: list[str] | None = None,
-        needs: list[str] | None = None,
-        http_port: int | None = None,
-        duration: float | None = None,
-    ) -> ServiceStream:
-        """Create or update a service.
-
-        Args:
-            name: The name of the service.
-            cmd: The command to run.
-            args: Command arguments.
-            needs: Services this service depends on.
-            http_port: HTTP port the service listens on.
-            duration: Monitoring duration in seconds.
-
-        Returns:
-            A stream of service log events.
-        """
-        from sprites.services import create_service
-
-        return create_service(self, name, cmd, args, needs, http_port, duration)
-
-    def delete_service(self, name: str) -> None:
-        """Delete a service.
-
-        Args:
-            name: The name of the service.
-        """
-        from sprites.services import delete_service
-
-        delete_service(self, name)
-
-    def start_service(
-        self,
-        name: str,
-        duration: float | None = None,
-    ) -> ServiceStream:
-        """Start a service.
-
-        Args:
-            name: The name of the service.
-            duration: Monitoring duration in seconds.
-
-        Returns:
-            A stream of service log events.
-        """
-        from sprites.services import start_service
-
-        return start_service(self, name, duration)
-
-    def stop_service(
-        self,
-        name: str,
-        timeout: float | None = None,
-    ) -> ServiceStream:
-        """Stop a service.
-
-        Args:
-            name: The name of the service.
-            timeout: Timeout in seconds before force stop.
-
-        Returns:
-            A stream of service log events.
-        """
-        from sprites.services import stop_service
-
-        return stop_service(self, name, timeout)
-
-    def signal_service(self, name: str, signal: str) -> None:
-        """Send a signal to a running service.
-
-        Args:
-            name: The name of the service.
-            signal: The signal to send (e.g., "SIGTERM", "SIGHUP").
-        """
-        from sprites.services import signal_service
-
-        signal_service(self, name, signal)
+        if not response.is_success:
+            raise SpriteError(
+                f"Failed to update network policy (status {response.status_code}): {response.text}"
+            )

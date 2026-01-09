@@ -1,57 +1,109 @@
-"""Sprites SDK - Python client for remote command execution on Sprites."""
+"""
+Sprites SDK for Python
 
-from sprites.client import SpritesClient
-from sprites.exceptions import APIError, ExitError, TimeoutError
-from sprites.exec import Cmd, CompletedProcess, run
-from sprites.services import ServiceStream
-from sprites.session import KillStream
-from sprites.sprite import Sprite
-from sprites.types import (
+A Python SDK for interacting with the Sprites API, providing filesystem,
+checkpoint, services, and network policy management.
+
+Usage:
+    from sprites import SpritesClient
+
+    client = SpritesClient(token="your-token")
+    sprite = client.sprite("my-sprite")
+
+    # Filesystem operations (pathlib.Path-like API)
+    fs = sprite.filesystem("/app")
+    config = (fs / "config.json").read_text()
+    (fs / "output.txt").write_text("Hello, World!")
+
+    # List directory contents
+    for entry in (fs / "data").iterdir():
+        print(entry.name)
+"""
+
+from .client import SpritesClient
+from .sprite import Sprite
+from .filesystem import SpriteFilesystem, SpritePath
+from .exceptions import (
+    SpriteError,
+    NetworkError,
+    AuthenticationError,
+    NotFoundError,
+    ExecError,
+    FilesystemError,
+    FileNotFoundError_,
+    IsADirectoryError_,
+    NotADirectoryError_,
+    PermissionError_,
+    DirectoryNotEmptyError,
+)
+from .types import (
+    ClientOptions,
+    URLSettings,
+    SpriteConfig,
+    SpawnOptions,
+    ExecOptions,
+    ExecResult,
+    SpriteInfo,
+    ListOptions,
+    SpriteList,
+    Session,
     Checkpoint,
-    NetworkPolicy,
-    PolicyRule,
+    StreamMessage,
+    PortMapping,
     Service,
-    ServiceLogEvent,
     ServiceState,
     ServiceWithState,
-    Session,
-    SpriteConfig,
-    SpriteInfo,
-    StreamMessage,
-    URLSettings,
+    ServiceRequest,
+    ServiceLogEvent,
+    PolicyRule,
+    NetworkPolicy,
+    FileStat,
+    DirEntry,
 )
 
+__version__ = "0.1.0"
+
 __all__ = [
-    # Client
+    # Main classes
     "SpritesClient",
     "Sprite",
-    # Command execution
-    "Cmd",
-    "CompletedProcess",
-    "run",
+    "SpriteFilesystem",
+    "SpritePath",
     # Exceptions
-    "ExitError",
-    "APIError",
-    "TimeoutError",
-    # Configuration
-    "SpriteConfig",
-    "SpriteInfo",
+    "SpriteError",
+    "NetworkError",
+    "AuthenticationError",
+    "NotFoundError",
+    "ExecError",
+    "FilesystemError",
+    "FileNotFoundError_",
+    "IsADirectoryError_",
+    "NotADirectoryError_",
+    "PermissionError_",
+    "DirectoryNotEmptyError",
+    # Types
+    "ClientOptions",
     "URLSettings",
-    # Checkpoints
+    "SpriteConfig",
+    "SpawnOptions",
+    "ExecOptions",
+    "ExecResult",
+    "SpriteInfo",
+    "ListOptions",
+    "SpriteList",
+    "Session",
     "Checkpoint",
     "StreamMessage",
-    # Network policy
-    "NetworkPolicy",
-    "PolicyRule",
-    # Sessions
-    "Session",
-    "KillStream",
-    # Services
+    "PortMapping",
     "Service",
     "ServiceState",
     "ServiceWithState",
+    "ServiceRequest",
     "ServiceLogEvent",
-    "ServiceStream",
+    "PolicyRule",
+    "NetworkPolicy",
+    "FileStat",
+    "DirEntry",
+    # Version
+    "__version__",
 ]
-
-__version__ = "0.1.0"

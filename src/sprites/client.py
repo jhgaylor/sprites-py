@@ -1,261 +1,341 @@
-"""HTTP client for the Sprites API."""
+"""
+Sprites client implementation
+"""
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING, Any
-
+from typing import Any, Dict, List, Optional
 import httpx
 
-from sprites.exceptions import APIError
-from sprites.types import SpriteConfig, SpriteInfo, URLSettings
-
-if TYPE_CHECKING:
-    from sprites.sprite import Sprite
-
-DEFAULT_BASE_URL = "https://api.sprites.dev"
-DEFAULT_TIMEOUT = 30.0
-CREATE_TIMEOUT = 120.0  # Sprite creation can take longer
+from .types import (
+    ClientOptions,
+    SpriteConfig,
+    SpriteInfo,
+    SpriteList,
+    ListOptions,
+    URLSettings,
+)
+from .exceptions import (
+    SpriteError,
+    NetworkError,
+    AuthenticationError,
+    NotFoundError,
+)
 
 
 class SpritesClient:
-    """Client for interacting with the Sprites API."""
+    """Main client for interacting with the Sprites API."""
 
     def __init__(
         self,
         token: str,
-        *,
-        base_url: str = DEFAULT_BASE_URL,
-        timeout: float = DEFAULT_TIMEOUT,
+        base_url: str = "https://api.sprites.dev",
+        timeout: float = 30.0
     ):
-        """Initialize a new Sprites client.
+        """
+        Initialize the Sprites client.
 
         Args:
-            token: Authentication token for the API.
-            base_url: Base URL for the API (default: https://api.sprites.dev).
-            timeout: Default timeout for requests in seconds (default: 30).
+            token: Authentication token
+            base_url: Base URL for the API (default: https://api.sprites.dev)
+            timeout: HTTP request timeout in seconds (default: 30.0)
         """
         self.token = token
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self._http_client: httpx.Client | None = None
+        self._client = httpx.Client(timeout=timeout)
 
-    @property
-    def http_client(self) -> httpx.Client:
-        """Get or create the HTTP client."""
-        if self._http_client is None:
-            self._http_client = httpx.Client(
-                timeout=self.timeout,
-                headers={"Authorization": f"Bearer {self.token}"},
-            )
-        return self._http_client
+    def __enter__(self) -> "SpritesClient":
+        return self
 
-    def sprite(self, name: str) -> Sprite:
-        """Get a handle to a sprite (doesn't create it on the server).
-
-        Args:
-            name: The name of the sprite.
-
-        Returns:
-            A Sprite object for the given name.
-        """
-        from sprites.sprite import Sprite
-
-        return Sprite(name=name, client=self)
-
-    def create_sprite(self, name: str, config: SpriteConfig | None = None) -> Sprite:
-        """Create a new sprite on the server.
-
-        Args:
-            name: The name of the sprite to create.
-            config: Optional configuration for the sprite.
-
-        Returns:
-            A Sprite object for the created sprite.
-
-        Raises:
-            APIError: If the API call fails.
-        """
-        from sprites.sprite import Sprite
-
-        url = f"{self.base_url}/v1/sprites"
-
-        payload: dict[str, Any] = {"name": name}
-        if config:
-            cfg: dict[str, Any] = {}
-            if config.ram_mb is not None:
-                cfg["ram_mb"] = config.ram_mb
-            if config.cpus is not None:
-                cfg["cpus"] = config.cpus
-            if config.region is not None:
-                cfg["region"] = config.region
-            if config.storage_gb is not None:
-                cfg["storage_gb"] = config.storage_gb
-            if cfg:
-                payload["config"] = cfg
-
-        try:
-            response = self.http_client.post(
-                url,
-                json=payload,
-                timeout=CREATE_TIMEOUT,
-            )
-        except httpx.RequestError as e:
-            raise APIError(f"Failed to create sprite: {e}") from e
-
-        if response.status_code != 201:
-            raise APIError(
-                f"Failed to create sprite (status {response.status_code})",
-                status_code=response.status_code,
-                response=response.text,
-            )
-
-        data = response.json()
-        return Sprite(name=data.get("name", name), client=self)
-
-    def get_sprite(self, name: str) -> Sprite:
-        """Get information about a sprite.
-
-        Args:
-            name: The name of the sprite.
-
-        Returns:
-            A Sprite object with populated info.
-
-        Raises:
-            APIError: If the API call fails.
-        """
-        from sprites.sprite import Sprite
-
-        url = f"{self.base_url}/v1/sprites/{name}"
-
-        try:
-            response = self.http_client.get(url)
-        except httpx.RequestError as e:
-            raise APIError(f"Failed to get sprite: {e}") from e
-
-        if response.status_code == 404:
-            raise APIError(f"Sprite not found: {name}", status_code=404)
-
-        if response.status_code != 200:
-            raise APIError(
-                f"Failed to get sprite (status {response.status_code})",
-                status_code=response.status_code,
-                response=response.text,
-            )
-
-        data = response.json()
-        info = SpriteInfo(
-            name=data.get("name", name),
-            id=data.get("id"),
-            status=data.get("status"),
-            url=data.get("url"),
-            region=data.get("primary_region"),
-        )
-        return Sprite(name=info.name, client=self, info=info)
-
-    def delete_sprite(self, name: str) -> None:
-        """Delete a sprite.
-
-        Args:
-            name: The name of the sprite to delete.
-
-        Raises:
-            APIError: If the API call fails.
-        """
-        url = f"{self.base_url}/v1/sprites/{name}"
-
-        try:
-            response = self.http_client.delete(url)
-        except httpx.RequestError as e:
-            raise APIError(f"Failed to delete sprite: {e}") from e
-
-        if response.status_code not in (200, 204):
-            raise APIError(
-                f"Failed to delete sprite (status {response.status_code})",
-                status_code=response.status_code,
-                response=response.text,
-            )
-
-    def list_sprites(self, prefix: str = "") -> list[SpriteInfo]:
-        """List all sprites.
-
-        Args:
-            prefix: Optional prefix to filter sprite names.
-
-        Returns:
-            List of SpriteInfo objects.
-
-        Raises:
-            APIError: If the API call fails.
-        """
-        url = f"{self.base_url}/v1/sprites"
-        params = {}
-        if prefix:
-            params["prefix"] = prefix
-
-        try:
-            response = self.http_client.get(url, params=params)
-        except httpx.RequestError as e:
-            raise APIError(f"Failed to list sprites: {e}") from e
-
-        if response.status_code != 200:
-            raise APIError(
-                f"Failed to list sprites (status {response.status_code})",
-                status_code=response.status_code,
-                response=response.text,
-            )
-
-        data = response.json()
-        sprites_data = data.get("sprites", [])
-
-        sprites = []
-        for s in sprites_data:
-            sprites.append(SpriteInfo(
-                name=s.get("name", ""),
-                id=s.get("id"),
-                status=s.get("status"),
-                url=s.get("url"),
-            ))
-        return sprites
-
-    def update_url_settings(self, name: str, settings: URLSettings) -> None:
-        """Update URL settings for a sprite.
-
-        Args:
-            name: The name of the sprite.
-            settings: The URL settings to apply.
-
-        Raises:
-            APIError: If the API call fails.
-        """
-        url = f"{self.base_url}/v1/sprites/{name}"
-
-        payload = {
-            "url_settings": {
-                "auth": settings.auth,
-            }
-        }
-
-        try:
-            response = self.http_client.put(url, json=payload)
-        except httpx.RequestError as e:
-            raise APIError(f"Failed to update URL settings: {e}") from e
-
-        if response.status_code not in (200, 204):
-            raise APIError(
-                f"Failed to update URL settings (status {response.status_code})",
-                status_code=response.status_code,
-                response=response.text,
-            )
+    def __exit__(self, *args: Any) -> None:
+        self.close()
 
     def close(self) -> None:
         """Close the HTTP client."""
-        if self._http_client is not None:
-            self._http_client.close()
-            self._http_client = None
+        self._client.close()
 
-    def __enter__(self) -> SpritesClient:
-        return self
+    def _headers(self) -> Dict[str, str]:
+        """Get default headers with authorization."""
+        return {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/json",
+        }
 
-    def __exit__(self, *args: object) -> None:
-        self.close()
+    def _handle_response(self, response: httpx.Response, operation: str) -> None:
+        """Handle HTTP response errors."""
+        if response.status_code == 401:
+            raise AuthenticationError(f"Authentication failed for {operation}")
+        if response.status_code == 404:
+            raise NotFoundError(f"Resource not found for {operation}")
+        if not response.is_success:
+            try:
+                body = response.text
+            except Exception:
+                body = ""
+            raise SpriteError(
+                f"Failed {operation} (status {response.status_code}): {body}"
+            )
+
+    def sprite(self, name: str) -> "Sprite":
+        """
+        Get a handle to a sprite (doesn't create it on the server).
+
+        Args:
+            name: Sprite name
+
+        Returns:
+            Sprite instance
+        """
+        from .sprite import Sprite
+        return Sprite(name, self)
+
+    def create_sprite(
+        self,
+        name: str,
+        config: Optional[SpriteConfig] = None
+    ) -> "Sprite":
+        """
+        Create a new sprite.
+
+        Args:
+            name: Sprite name
+            config: Optional configuration
+
+        Returns:
+            Created Sprite instance
+        """
+        from .sprite import Sprite
+
+        request: Dict[str, Any] = {"name": name}
+        if config:
+            request["config"] = {
+                k: v for k, v in {
+                    "ram_mb": config.ram_mb,
+                    "cpus": config.cpus,
+                    "region": config.region,
+                    "storage_gb": config.storage_gb,
+                }.items() if v is not None
+            }
+
+        try:
+            response = self._client.post(
+                f"{self.base_url}/v1/sprites",
+                headers=self._headers(),
+                json=request,
+                timeout=120.0,  # 2 minute timeout for creation
+            )
+        except httpx.RequestError as e:
+            raise NetworkError(f"Network error creating sprite: {e}")
+
+        self._handle_response(response, "create sprite")
+        result = response.json()
+        return Sprite(result["name"], self)
+
+    def get_sprite(self, name: str) -> "Sprite":
+        """
+        Get information about a sprite.
+
+        Args:
+            name: Sprite name
+
+        Returns:
+            Sprite instance with populated info
+        """
+        from .sprite import Sprite
+
+        try:
+            response = self._client.get(
+                f"{self.base_url}/v1/sprites/{name}",
+                headers=self._headers(),
+            )
+        except httpx.RequestError as e:
+            raise NetworkError(f"Network error getting sprite: {e}")
+
+        self._handle_response(response, f"get sprite '{name}'")
+        info = response.json()
+        sprite = Sprite(info["name"], self)
+        sprite._update_from_info(info)
+        return sprite
+
+    def list_sprites(self, options: Optional[ListOptions] = None) -> SpriteList:
+        """
+        List sprites with optional filtering and pagination.
+
+        Args:
+            options: Optional filtering/pagination options
+
+        Returns:
+            Paginated list of sprites
+        """
+        params: Dict[str, Any] = {}
+        if options:
+            if options.max_results:
+                params["max_results"] = options.max_results
+            if options.continuation_token:
+                params["continuation_token"] = options.continuation_token
+            if options.prefix:
+                params["prefix"] = options.prefix
+
+        try:
+            response = self._client.get(
+                f"{self.base_url}/v1/sprites",
+                headers=self._headers(),
+                params=params,
+            )
+        except httpx.RequestError as e:
+            raise NetworkError(f"Network error listing sprites: {e}")
+
+        self._handle_response(response, "list sprites")
+        data = response.json()
+
+        sprites = []
+        for s in data.get("sprites", []):
+            sprites.append(SpriteInfo(
+                id=s.get("id", ""),
+                name=s.get("name", ""),
+                organization=s.get("organization", ""),
+                status=s.get("status", ""),
+                url=s.get("url"),
+                primary_region=s.get("primary_region"),
+            ))
+
+        return SpriteList(
+            sprites=sprites,
+            has_more=data.get("hasMore", False),
+            next_continuation_token=data.get("nextContinuationToken"),
+        )
+
+    def list_all_sprites(self, prefix: Optional[str] = None) -> List["Sprite"]:
+        """
+        List all sprites, handling pagination automatically.
+
+        Args:
+            prefix: Optional name prefix filter
+
+        Returns:
+            List of all Sprite instances
+        """
+        from .sprite import Sprite
+
+        all_sprites: List[Sprite] = []
+        continuation_token: Optional[str] = None
+
+        while True:
+            result = self.list_sprites(ListOptions(
+                prefix=prefix,
+                max_results=100,
+                continuation_token=continuation_token,
+            ))
+
+            for info in result.sprites:
+                sprite = Sprite(info.name, self)
+                all_sprites.append(sprite)
+
+            if not result.has_more:
+                break
+            continuation_token = result.next_continuation_token
+
+        return all_sprites
+
+    def delete_sprite(self, name: str) -> None:
+        """
+        Delete a sprite.
+
+        Args:
+            name: Sprite name
+        """
+        try:
+            response = self._client.delete(
+                f"{self.base_url}/v1/sprites/{name}",
+                headers=self._headers(),
+            )
+        except httpx.RequestError as e:
+            raise NetworkError(f"Network error deleting sprite: {e}")
+
+        if response.status_code != 204:
+            self._handle_response(response, f"delete sprite '{name}'")
+
+    def upgrade_sprite(self, name: str) -> None:
+        """
+        Upgrade a sprite to the latest version.
+
+        Args:
+            name: Sprite name
+        """
+        try:
+            response = self._client.post(
+                f"{self.base_url}/v1/sprites/{name}/upgrade",
+                headers=self._headers(),
+                timeout=60.0,
+            )
+        except httpx.RequestError as e:
+            raise NetworkError(f"Network error upgrading sprite: {e}")
+
+        if response.status_code != 204:
+            self._handle_response(response, f"upgrade sprite '{name}'")
+
+    def update_url_settings(self, name: str, settings: URLSettings) -> None:
+        """
+        Update URL authentication settings for a sprite.
+
+        Args:
+            name: Sprite name
+            settings: URL settings with auth: "public" for no auth, "sprite" for authenticated
+        """
+        try:
+            response = self._client.put(
+                f"{self.base_url}/v1/sprites/{name}",
+                headers=self._headers(),
+                json={"url_settings": {"auth": settings.auth}},
+            )
+        except httpx.RequestError as e:
+            raise NetworkError(f"Network error updating URL settings: {e}")
+
+        self._handle_response(response, f"update URL settings for '{name}'")
+
+    @staticmethod
+    def create_token(
+        fly_macaroon: str,
+        org_slug: str,
+        invite_code: Optional[str] = None
+    ) -> str:
+        """
+        Create a sprite access token using a Fly.io macaroon token.
+
+        Args:
+            fly_macaroon: Fly.io macaroon token
+            org_slug: Organization slug
+            invite_code: Optional invite code
+
+        Returns:
+            Access token string
+        """
+        api_url = "https://api.sprites.dev"
+        url = f"{api_url}/v1/organizations/{org_slug}/tokens"
+
+        body: Dict[str, Any] = {"description": "Sprite SDK Token"}
+        if invite_code:
+            body["invite_code"] = invite_code
+
+        with httpx.Client(timeout=30.0) as client:
+            try:
+                response = client.post(
+                    url,
+                    headers={
+                        "Authorization": f"FlyV1 {fly_macaroon}",
+                        "Content-Type": "application/json",
+                    },
+                    json=body,
+                )
+            except httpx.RequestError as e:
+                raise NetworkError(f"Network error creating token: {e}")
+
+            if not response.is_success:
+                raise SpriteError(
+                    f"API returned status {response.status_code}: {response.text}"
+                )
+
+            result = response.json()
+            if "token" not in result:
+                raise SpriteError("No token returned in response")
+
+            return result["token"]
