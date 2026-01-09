@@ -53,6 +53,11 @@ class SpritesClient:
         """Close the HTTP client."""
         self._client.close()
 
+    @property
+    def http_client(self) -> "_AuthenticatedClient":
+        """Get an HTTP client with pre-configured authorization headers."""
+        return _AuthenticatedClient(self._client, self.token)
+
     def _headers(self) -> Dict[str, str]:
         """Get default headers with authorization."""
         return {
@@ -339,3 +344,34 @@ class SpritesClient:
                 raise SpriteError("No token returned in response")
 
             return result["token"]
+
+
+class _AuthenticatedClient:
+    """Wrapper around httpx.Client that adds authorization headers to all requests."""
+
+    def __init__(self, client: httpx.Client, token: str):
+        self._client = client
+        self._token = token
+
+    def _auth_headers(self) -> Dict[str, str]:
+        return {"Authorization": f"Bearer {self._token}"}
+
+    def get(self, url: str, **kwargs: Any) -> httpx.Response:
+        headers = kwargs.pop("headers", {})
+        headers.update(self._auth_headers())
+        return self._client.get(url, headers=headers, **kwargs)
+
+    def post(self, url: str, **kwargs: Any) -> httpx.Response:
+        headers = kwargs.pop("headers", {})
+        headers.update(self._auth_headers())
+        return self._client.post(url, headers=headers, **kwargs)
+
+    def put(self, url: str, **kwargs: Any) -> httpx.Response:
+        headers = kwargs.pop("headers", {})
+        headers.update(self._auth_headers())
+        return self._client.put(url, headers=headers, **kwargs)
+
+    def delete(self, url: str, **kwargs: Any) -> httpx.Response:
+        headers = kwargs.pop("headers", {})
+        headers.update(self._auth_headers())
+        return self._client.delete(url, headers=headers, **kwargs)

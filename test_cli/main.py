@@ -45,6 +45,57 @@ from typing import Optional, Dict, Any, List
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from sprites import SpritesClient, FilesystemError, NetworkPolicy, PolicyRule
+from sprites.exceptions import ExitError, TimeoutError as SpriteTimeoutError
+
+
+def parse_duration(s: str) -> Optional[float]:
+    """Parse a Go-style duration string (e.g., '10s', '5m', '1h') to seconds."""
+    if not s or s == "0":
+        return None
+
+    s = s.strip()
+    total = 0.0
+    current_num = ""
+
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c.isdigit() or c == ".":
+            current_num += c
+        else:
+            if current_num:
+                num = float(current_num)
+                if c == "h":
+                    total += num * 3600
+                elif c == "m":
+                    # Check for 'ms' (milliseconds)
+                    if i + 1 < len(s) and s[i + 1] == "s":
+                        total += num / 1000
+                        i += 1
+                    else:
+                        total += num * 60
+                elif c == "s":
+                    total += num
+                current_num = ""
+        i += 1
+
+    # Handle plain number (assume seconds)
+    if current_num:
+        total += float(current_num)
+
+    return total if total > 0 else None
+
+
+def parse_env(env_str: str) -> Dict[str, str]:
+    """Parse comma-separated key=value pairs."""
+    if not env_str:
+        return {}
+    result = {}
+    for pair in env_str.split(","):
+        if "=" in pair:
+            key, value = pair.split("=", 1)
+            result[key] = value
+    return result
 
 
 def parse_args(argv: List[str]) -> tuple[Dict[str, Any], List[str]]:
@@ -58,6 +109,12 @@ def parse_args(argv: List[str]) -> tuple[Dict[str, Any], List[str]]:
         "sprite": None,
         "dir": None,
         "json": False,
+        "output": "stdout",  # Output mode: stdout, combined, exit-code
+        "timeout": None,
+        "tty": False,
+        "tty_rows": 24,
+        "tty_cols": 80,
+        "env": None,
     }
 
     args: List[str] = []
@@ -75,6 +132,23 @@ def parse_args(argv: List[str]) -> tuple[Dict[str, Any], List[str]]:
         elif arg == "-dir":
             i += 1
             options["dir"] = argv[i]
+        elif arg == "-output":
+            i += 1
+            options["output"] = argv[i]
+        elif arg == "-timeout":
+            i += 1
+            options["timeout"] = argv[i]
+        elif arg == "-tty":
+            options["tty"] = True
+        elif arg == "-tty-rows":
+            i += 1
+            options["tty_rows"] = int(argv[i])
+        elif arg == "-tty-cols":
+            i += 1
+            options["tty_cols"] = int(argv[i])
+        elif arg == "-env":
+            i += 1
+            options["env"] = argv[i]
         elif arg == "-json":
             options["json"] = True
         elif arg in ("-help", "--help"):
@@ -438,8 +512,16 @@ def cmd_checkpoint_list(client: SpritesClient, sprite_name: str, as_json: bool) 
 
 def cmd_checkpoint_create(client: SpritesClient, sprite_name: str, args: List[str]) -> None:
     """Create checkpoint."""
-    print("Checkpoint creation requires streaming support (not yet implemented)")
-    sys.exit(1)
+    comment = args[0] if args else ""
+
+    sprite = client.sprite(sprite_name)
+    try:
+        stream = sprite.create_checkpoint(comment)
+        for msg in stream:
+            print(json.dumps({"type": msg.type, "data": msg.data, "error": msg.error}))
+    except Exception as e:
+        print(f"Failed to create checkpoint: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def cmd_checkpoint_get(client: SpritesClient, sprite_name: str, args: List[str], as_json: bool) -> None:
@@ -465,6 +547,78 @@ def cmd_checkpoint_get(client: SpritesClient, sprite_name: str, args: List[str],
             print(f"Comment: {cp.comment}")
         if cp.history:
             print(f"History: {', '.join(cp.history)}")
+
+
+def cmd_checkpoint_restore(client: SpritesClient, sprite_name: str, args: List[str]) -> None:
+    """Restore a checkpoint."""
+    if len(args) < 1:
+        print("Error: checkpoint ID is required", file=sys.stderr)
+        sys.exit(1)
+
+    sprite = client.sprite(sprite_name)
+    stream = sprite.restore_checkpoint(args[0])
+    for msg in stream:
+        print(json.dumps({"type": msg.type, "data": msg.data, "error": msg.error}))
+
+
+def cmd_exec(
+    client: SpritesClient,
+    sprite_name: str,
+    command: str,
+    cmd_args: List[str],
+    options: Dict[str, Any],
+) -> None:
+    """Execute a command on a sprite."""
+    sprite = client.sprite(sprite_name)
+
+    # Parse options
+    timeout = parse_duration(options.get("timeout") or "0")
+    env = parse_env(options.get("env") or "")
+    cwd = options.get("dir")
+    output_mode = options.get("output", "stdout")
+    tty = options.get("tty", False)
+    tty_rows = options.get("tty_rows", 24)
+    tty_cols = options.get("tty_cols", 80)
+
+    # Build command
+    all_args = [command] + cmd_args
+    cmd = sprite.command(*all_args, env=env or None, cwd=cwd, timeout=timeout)
+
+    # Configure TTY
+    if tty:
+        cmd.set_tty(True)
+        cmd.set_tty_size(tty_rows, tty_cols)
+
+    try:
+        if output_mode == "stdout":
+            output = cmd.output()
+            sys.stdout.buffer.write(output)
+            sys.stdout.buffer.flush()
+        elif output_mode == "combined":
+            output = cmd.combined_output()
+            sys.stdout.buffer.write(output)
+            sys.stdout.buffer.flush()
+        elif output_mode == "exit-code":
+            cmd.run()
+        else:
+            # Default streaming mode
+            cmd.stdout = sys.stdout.buffer
+            cmd.stderr = sys.stderr.buffer
+            cmd.stdin = sys.stdin.buffer
+            cmd.run()
+    except ExitError as e:
+        exit_code = e.exit_code()
+        # For stdout/combined modes, print any captured output
+        if output_mode in ("stdout", "combined") and e.stdout:
+            sys.stdout.buffer.write(e.stdout)
+            sys.stdout.buffer.flush()
+        sys.exit(exit_code)
+    except SpriteTimeoutError as e:
+        print(f"Command timed out: {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Command failed: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def main() -> None:
@@ -556,23 +710,30 @@ def main() -> None:
             sys.exit(1)
 
         if len(command_args) == 0:
-            print("Error: checkpoint subcommand required (list, create, get)", file=sys.stderr)
+            print("Error: checkpoint subcommand required (list, create, get, restore)", file=sys.stderr)
             sys.exit(1)
 
         subcommand = command_args[0]
         if subcommand == "list":
-            cmd_checkpoint_list(client, sprite_name, as_json)
+            # Output JSON by default to match Go test-cli behavior
+            cmd_checkpoint_list(client, sprite_name, as_json=True)
         elif subcommand == "create":
             cmd_checkpoint_create(client, sprite_name, command_args[1:])
         elif subcommand == "get":
-            cmd_checkpoint_get(client, sprite_name, command_args[1:], as_json)
+            cmd_checkpoint_get(client, sprite_name, command_args[1:], as_json=True)
+        elif subcommand == "restore":
+            cmd_checkpoint_restore(client, sprite_name, command_args[1:])
         else:
             print(f"Error: unknown checkpoint subcommand: {subcommand}", file=sys.stderr)
             sys.exit(1)
         return
 
-    print(f"Error: unknown command: {command}", file=sys.stderr)
-    sys.exit(1)
+    # Unknown command - treat as exec command (run on sprite)
+    if not sprite_name:
+        print(f"Error: -sprite is required for exec commands", file=sys.stderr)
+        sys.exit(1)
+
+    cmd_exec(client, sprite_name, command, command_args, options)
 
 
 if __name__ == "__main__":
