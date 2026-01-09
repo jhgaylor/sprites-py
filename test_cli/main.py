@@ -77,6 +77,9 @@ def parse_args(argv: List[str]) -> tuple[Dict[str, Any], List[str]]:
             options["dir"] = argv[i]
         elif arg == "-json":
             options["json"] = True
+        elif arg in ("-help", "--help"):
+            print(__doc__)
+            sys.exit(0)
         elif not arg.startswith("-"):
             # Collect remaining args as command + args
             args = argv[i:]
