@@ -3,39 +3,43 @@
 Test CLI for Sprites Python SDK
 
 Usage:
-    python -m test_cli <command> [options]
+    python -m test_cli [options] <command> [command-options]
+
+Global Options:
+    -base-url <url>       Base URL for the sprite API (default: https://api.sprites.dev)
+    -sprite <name>        Sprite name (required for most commands)
+    -dir <path>           Working directory for filesystem operations
 
 Commands:
-    create <sprite-name>          Create a new sprite
-    destroy <sprite-name>         Destroy a sprite
-    list                          List all sprites
+    create <name>         Create a new sprite
+    destroy <name>        Destroy a sprite
+    list                  List all sprites
 
-    # Filesystem commands (require --sprite)
-    fs-read <path>                Read file contents
-    fs-write <path> <content>     Write content to file
-    fs-list <path>                List directory contents
-    fs-stat <path>                Get file/directory stats
-    fs-mkdir <path>               Create directory
-    fs-rm <path>                  Remove file or directory
-    fs-rename <source> <dest>     Rename/move file or directory
-    fs-copy <source> <dest>       Copy file or directory
-    fs-chmod <path> <mode>        Change file permissions
+    # Filesystem commands (require -sprite)
+    fs-read -path <path>                          Read file contents
+    fs-write -path <path> -content <content>      Write content to file
+    fs-list -path <path>                          List directory contents
+    fs-stat -path <path>                          Get file/directory stats
+    fs-mkdir -path <path> [-parents]              Create directory
+    fs-rm -path <path> [-recursive]               Remove file or directory
+    fs-rename -old <path> -new <path>             Rename/move file or directory
+    fs-copy -src <path> -dst <path>               Copy file or directory
+    fs-chmod -path <path> -mode <mode>            Change file permissions
 
-    # Policy commands (require --sprite)
-    policy-get                    Get network policy
-    policy-set <json>             Set network policy
+    # Policy commands (require -sprite)
+    policy get                                    Get network policy
+    policy set <json>                             Set network policy
 
-    # Checkpoint commands (require --sprite)
-    checkpoint-list               List checkpoints
-    checkpoint-create [comment]   Create checkpoint
-    checkpoint-get <id>           Get checkpoint details
+    # Checkpoint commands (require -sprite)
+    checkpoint list                               List checkpoints
+    checkpoint create <comment>                   Create checkpoint
+    checkpoint get <id>                           Get checkpoint details
 """
 
-import argparse
 import json
 import os
 import sys
-from typing import Optional
+from typing import Optional, Dict, Any, List
 
 # Add parent directory to path for local development
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -43,235 +47,334 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from sprites import SpritesClient, FilesystemError, NetworkPolicy, PolicyRule
 
 
-def get_client() -> SpritesClient:
+def parse_args(argv: List[str]) -> tuple[Dict[str, Any], List[str]]:
+    """Parse Go-style command line arguments.
+
+    Returns (options, remaining_args) where options contains global flags
+    and remaining_args contains the command and its arguments.
+    """
+    options: Dict[str, Any] = {
+        "base_url": os.environ.get("SPRITES_BASE_URL", "https://api.sprites.dev"),
+        "sprite": None,
+        "dir": None,
+        "json": False,
+    }
+
+    args: List[str] = []
+    i = 1  # Skip script name
+
+    while i < len(argv):
+        arg = argv[i]
+
+        if arg == "-base-url":
+            i += 1
+            options["base_url"] = argv[i]
+        elif arg == "-sprite":
+            i += 1
+            options["sprite"] = argv[i]
+        elif arg == "-dir":
+            i += 1
+            options["dir"] = argv[i]
+        elif arg == "-json":
+            options["json"] = True
+        elif not arg.startswith("-"):
+            # Collect remaining args as command + args
+            args = argv[i:]
+            break
+        else:
+            # Unknown flag - might be command-specific
+            args = argv[i:]
+            break
+
+        i += 1
+
+    return options, args
+
+
+def parse_fs_flags(args: List[str]) -> Dict[str, Any]:
+    """Parse filesystem command flags (Go-style)."""
+    flags: Dict[str, Any] = {
+        "path": None,
+        "content": None,
+        "parents": False,
+        "recursive": False,
+        "old": None,
+        "new": None,
+        "src": None,
+        "dst": None,
+        "mode": None,
+    }
+
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "-path":
+            i += 1
+            flags["path"] = args[i] if i < len(args) else None
+        elif arg == "-content":
+            i += 1
+            flags["content"] = args[i] if i < len(args) else None
+        elif arg == "-parents":
+            flags["parents"] = True
+        elif arg == "-recursive":
+            flags["recursive"] = True
+        elif arg == "-old":
+            i += 1
+            flags["old"] = args[i] if i < len(args) else None
+        elif arg == "-new":
+            i += 1
+            flags["new"] = args[i] if i < len(args) else None
+        elif arg == "-src":
+            i += 1
+            flags["src"] = args[i] if i < len(args) else None
+        elif arg == "-dst":
+            i += 1
+            flags["dst"] = args[i] if i < len(args) else None
+        elif arg == "-mode":
+            i += 1
+            flags["mode"] = args[i] if i < len(args) else None
+        i += 1
+
+    return flags
+
+
+def get_client(base_url: str) -> SpritesClient:
     """Get a SpritesClient using environment variables."""
     token = os.environ.get("SPRITES_TOKEN")
     if not token:
         print("Error: SPRITES_TOKEN environment variable is required", file=sys.stderr)
         sys.exit(1)
 
-    base_url = os.environ.get("SPRITES_BASE_URL", "https://api.sprites.dev")
     return SpritesClient(token=token, base_url=base_url)
 
 
-def cmd_create(args: argparse.Namespace) -> None:
+def cmd_create(client: SpritesClient, args: List[str]) -> None:
     """Create a new sprite."""
-    client = get_client()
-    sprite = client.create_sprite(args.name)
+    if len(args) < 1:
+        print("Error: sprite name is required for create command", file=sys.stderr)
+        sys.exit(1)
+
+    sprite = client.create_sprite(args[0])
     print(f"Created sprite: {sprite.name}")
 
 
-def cmd_destroy(args: argparse.Namespace) -> None:
+def cmd_destroy(client: SpritesClient, args: List[str]) -> None:
     """Destroy a sprite."""
-    client = get_client()
-    client.delete_sprite(args.name)
-    print(f"Destroyed sprite: {args.name}")
+    if len(args) < 1:
+        print("Error: sprite name is required for destroy command", file=sys.stderr)
+        sys.exit(1)
+
+    client.delete_sprite(args[0])
+    print(f"Destroyed sprite: {args[0]}")
 
 
-def cmd_list(args: argparse.Namespace) -> None:
+def cmd_list(client: SpritesClient) -> None:
     """List all sprites."""
-    client = get_client()
     result = client.list_sprites()
     for sprite_info in result.sprites:
         print(f"{sprite_info.name} ({sprite_info.status})")
 
 
-def cmd_fs_read(args: argparse.Namespace) -> None:
+def cmd_fs_read(client: SpritesClient, sprite_name: str, workdir: str, flags: Dict[str, Any]) -> None:
     """Read file contents."""
-    client = get_client()
-    sprite = client.sprite(args.sprite)
-    fs = sprite.filesystem(args.workdir or "/")
-    path = fs / args.path
+    path = flags.get("path")
+    if not path:
+        print("Error: -path is required for fs-read command", file=sys.stderr)
+        sys.exit(1)
+
+    sprite = client.sprite(sprite_name)
+    fs = sprite.filesystem(workdir or "/")
+    file_path = fs / path
 
     try:
-        if args.binary:
-            content = path.read_bytes()
-            sys.stdout.buffer.write(content)
-        else:
-            content = path.read_text()
-            print(content, end="")
+        content = file_path.read_text()
+        print(content, end="")
     except FilesystemError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
 
-def cmd_fs_write(args: argparse.Namespace) -> None:
+def cmd_fs_write(client: SpritesClient, sprite_name: str, workdir: str, flags: Dict[str, Any]) -> None:
     """Write content to file."""
-    client = get_client()
-    sprite = client.sprite(args.sprite)
-    fs = sprite.filesystem(args.workdir or "/")
-    path = fs / args.path
+    path = flags.get("path")
+    if not path:
+        print("Error: -path is required for fs-write command", file=sys.stderr)
+        sys.exit(1)
+
+    content = flags.get("content") or ""
+
+    sprite = client.sprite(sprite_name)
+    fs = sprite.filesystem(workdir or "/")
+    file_path = fs / path
 
     try:
-        mode = int(args.mode, 8) if args.mode else 0o644
-        if args.stdin:
-            content = sys.stdin.read()
-        else:
-            content = args.content or ""
-
-        path.write_text(content, mode=mode)
-        print(f"Written: {args.path}")
+        file_path.write_text(content)
+        print(json.dumps({"status": "written", "path": path}))
     except FilesystemError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
 
-def cmd_fs_list(args: argparse.Namespace) -> None:
+def cmd_fs_list(client: SpritesClient, sprite_name: str, workdir: str, flags: Dict[str, Any]) -> None:
     """List directory contents."""
-    client = get_client()
-    sprite = client.sprite(args.sprite)
-    fs = sprite.filesystem(args.workdir or "/")
-    path = fs / args.path
+    path = flags.get("path") or "."
+
+    sprite = client.sprite(sprite_name)
+    fs = sprite.filesystem(workdir or "/")
+    dir_path = fs / path
 
     try:
-        if args.json:
-            entries = []
-            for entry in path.iterdir():
-                try:
-                    stat = entry.stat()
-                    entries.append({
-                        "name": entry.name,
-                        "path": str(entry),
-                        "is_dir": stat.is_dir,
-                        "size": stat.size,
-                        "mode": stat.mode,
-                    })
-                except FilesystemError:
-                    entries.append({
-                        "name": entry.name,
-                        "path": str(entry),
-                    })
-            print(json.dumps({"path": str(path), "entries": entries, "count": len(entries)}))
-        else:
-            for entry in path.iterdir():
-                try:
-                    stat = entry.stat()
-                    type_char = "d" if stat.is_dir else "-"
-                    print(f"{type_char} {stat.mode:>6} {stat.size:>10} {entry.name}")
-                except FilesystemError:
-                    print(f"? {'?':>6} {'?':>10} {entry.name}")
+        entries = []
+        for entry in dir_path.iterdir():
+            try:
+                stat = entry.stat()
+                entries.append({
+                    "name": entry.name,
+                    "isDirectory": stat.is_dir,
+                    "isFile": not stat.is_dir,
+                })
+            except FilesystemError:
+                entries.append({
+                    "name": entry.name,
+                })
+        print(json.dumps(entries, indent=2))
     except FilesystemError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
 
-def cmd_fs_stat(args: argparse.Namespace) -> None:
+def cmd_fs_stat(client: SpritesClient, sprite_name: str, workdir: str, flags: Dict[str, Any]) -> None:
     """Get file/directory stats."""
-    client = get_client()
-    sprite = client.sprite(args.sprite)
-    fs = sprite.filesystem(args.workdir or "/")
-    path = fs / args.path
+    path = flags.get("path")
+    if not path:
+        print("Error: -path is required for fs-stat command", file=sys.stderr)
+        sys.exit(1)
+
+    sprite = client.sprite(sprite_name)
+    fs = sprite.filesystem(workdir or "/")
+    file_path = fs / path
 
     try:
-        stat = path.stat()
-        if args.json:
-            print(json.dumps({
-                "name": stat.name,
-                "path": stat.path,
-                "size": stat.size,
-                "mode": stat.mode,
-                "mod_time": stat.mod_time.isoformat(),
-                "is_dir": stat.is_dir,
-            }))
-        else:
-            print(f"Name: {stat.name}")
-            print(f"Path: {stat.path}")
-            print(f"Size: {stat.size}")
-            print(f"Mode: {stat.mode}")
-            print(f"Modified: {stat.mod_time}")
-            print(f"Type: {'directory' if stat.is_dir else 'file'}")
+        stat = file_path.stat()
+        print(json.dumps({
+            "size": stat.size,
+            "mode": str(oct(stat.mode))[2:],  # Convert to octal string
+            "mtime": stat.mod_time.isoformat(),
+            "isDirectory": stat.is_dir,
+            "isFile": not stat.is_dir,
+        }, indent=2))
     except FilesystemError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
 
-def cmd_fs_mkdir(args: argparse.Namespace) -> None:
+def cmd_fs_mkdir(client: SpritesClient, sprite_name: str, workdir: str, flags: Dict[str, Any]) -> None:
     """Create directory."""
-    client = get_client()
-    sprite = client.sprite(args.sprite)
-    fs = sprite.filesystem(args.workdir or "/")
-    path = fs / args.path
+    path = flags.get("path")
+    if not path:
+        print("Error: -path is required for fs-mkdir command", file=sys.stderr)
+        sys.exit(1)
+
+    sprite = client.sprite(sprite_name)
+    fs = sprite.filesystem(workdir or "/")
+    dir_path = fs / path
 
     try:
-        mode = int(args.mode, 8) if args.mode else 0o755
-        path.mkdir(mode=mode, parents=args.parents, exist_ok=args.exist_ok)
-        print(f"Created: {args.path}")
+        dir_path.mkdir(parents=flags.get("parents", False))
+        print(json.dumps({"status": "created", "path": path}))
     except FilesystemError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
 
-def cmd_fs_rm(args: argparse.Namespace) -> None:
+def cmd_fs_rm(client: SpritesClient, sprite_name: str, workdir: str, flags: Dict[str, Any]) -> None:
     """Remove file or directory."""
-    client = get_client()
-    sprite = client.sprite(args.sprite)
-    fs = sprite.filesystem(args.workdir or "/")
-    path = fs / args.path
+    path = flags.get("path")
+    if not path:
+        print("Error: -path is required for fs-rm command", file=sys.stderr)
+        sys.exit(1)
+
+    sprite = client.sprite(sprite_name)
+    fs = sprite.filesystem(workdir or "/")
+    file_path = fs / path
 
     try:
-        if args.recursive:
-            path.rmtree()
+        if flags.get("recursive"):
+            file_path.rmtree()
         else:
-            path.unlink(missing_ok=args.force)
-        print(f"Removed: {args.path}")
+            file_path.unlink(missing_ok=True)
+        print(json.dumps({"status": "removed", "path": path}))
     except FilesystemError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
 
-def cmd_fs_rename(args: argparse.Namespace) -> None:
+def cmd_fs_rename(client: SpritesClient, sprite_name: str, workdir: str, flags: Dict[str, Any]) -> None:
     """Rename/move file or directory."""
-    client = get_client()
-    sprite = client.sprite(args.sprite)
-    fs = sprite.filesystem(args.workdir or "/")
-    source = fs / args.source
-    dest = fs / args.dest
+    old_path = flags.get("old")
+    new_path = flags.get("new")
+    if not old_path or not new_path:
+        print("Error: -old and -new are required for fs-rename command", file=sys.stderr)
+        sys.exit(1)
+
+    sprite = client.sprite(sprite_name)
+    fs = sprite.filesystem(workdir or "/")
+    source = fs / old_path
+    dest = fs / new_path
 
     try:
-        result = source.rename(dest)
-        print(f"Renamed: {args.source} -> {result}")
+        source.rename(dest)
+        print(json.dumps({"status": "renamed", "source": old_path, "dest": new_path}))
     except FilesystemError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
 
-def cmd_fs_copy(args: argparse.Namespace) -> None:
+def cmd_fs_copy(client: SpritesClient, sprite_name: str, workdir: str, flags: Dict[str, Any]) -> None:
     """Copy file or directory."""
-    client = get_client()
-    sprite = client.sprite(args.sprite)
-    fs = sprite.filesystem(args.workdir or "/")
-    source = fs / args.source
-    dest = fs / args.dest
+    src = flags.get("src")
+    dst = flags.get("dst")
+    if not src or not dst:
+        print("Error: -src and -dst are required for fs-copy command", file=sys.stderr)
+        sys.exit(1)
+
+    sprite = client.sprite(sprite_name)
+    fs = sprite.filesystem(workdir or "/")
+    source = fs / src
+    dest = fs / dst
 
     try:
-        result = source.copy_to(dest, recursive=args.recursive)
-        print(f"Copied: {args.source} -> {result}")
+        source.copy_to(dest, recursive=flags.get("recursive", True))
+        print(json.dumps({"status": "copied", "source": src, "dest": dst}))
     except FilesystemError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
 
-def cmd_fs_chmod(args: argparse.Namespace) -> None:
+def cmd_fs_chmod(client: SpritesClient, sprite_name: str, workdir: str, flags: Dict[str, Any]) -> None:
     """Change file permissions."""
-    client = get_client()
-    sprite = client.sprite(args.sprite)
-    fs = sprite.filesystem(args.workdir or "/")
-    path = fs / args.path
+    path = flags.get("path")
+    mode_str = flags.get("mode")
+    if not path or not mode_str:
+        print("Error: -path and -mode are required for fs-chmod command", file=sys.stderr)
+        sys.exit(1)
+
+    sprite = client.sprite(sprite_name)
+    fs = sprite.filesystem(workdir or "/")
+    file_path = fs / path
 
     try:
-        mode = int(args.mode, 8)
-        path.chmod(mode, recursive=args.recursive)
-        print(f"Changed mode: {args.path} -> {args.mode}")
+        mode = int(mode_str, 8)
+        file_path.chmod(mode, recursive=flags.get("recursive", False))
+        print(json.dumps({"status": "chmod", "path": path, "mode": mode_str}))
     except FilesystemError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
 
-def cmd_policy_get(args: argparse.Namespace) -> None:
+def cmd_policy_get(client: SpritesClient, sprite_name: str) -> None:
     """Get network policy."""
-    client = get_client()
-    sprite = client.sprite(args.sprite)
-
+    sprite = client.sprite(sprite_name)
     policy = sprite.get_network_policy()
     rules = []
     for rule in policy.rules:
@@ -286,13 +389,14 @@ def cmd_policy_get(args: argparse.Namespace) -> None:
     print(json.dumps({"rules": rules}, indent=2))
 
 
-def cmd_policy_set(args: argparse.Namespace) -> None:
+def cmd_policy_set(client: SpritesClient, sprite_name: str, args: List[str]) -> None:
     """Set network policy."""
-    client = get_client()
-    sprite = client.sprite(args.sprite)
+    if len(args) < 1:
+        print("Error: policy JSON is required", file=sys.stderr)
+        sys.exit(1)
 
     try:
-        data = json.loads(args.policy)
+        data = json.loads(args[0])
         rules = []
         for r in data.get("rules", []):
             rules.append(PolicyRule(
@@ -301,20 +405,20 @@ def cmd_policy_set(args: argparse.Namespace) -> None:
                 include=r.get("include"),
             ))
         policy = NetworkPolicy(rules=rules)
+        sprite = client.sprite(sprite_name)
         sprite.update_network_policy(policy)
-        print("Network policy updated")
+        print(json.dumps({"status": "updated"}))
     except json.JSONDecodeError as e:
         print(f"Error: Invalid JSON: {e}", file=sys.stderr)
         sys.exit(1)
 
 
-def cmd_checkpoint_list(args: argparse.Namespace) -> None:
+def cmd_checkpoint_list(client: SpritesClient, sprite_name: str, as_json: bool) -> None:
     """List checkpoints."""
-    client = get_client()
-    sprite = client.sprite(args.sprite)
-
+    sprite = client.sprite(sprite_name)
     checkpoints = sprite.list_checkpoints()
-    if args.json:
+
+    if as_json:
         result = []
         for cp in checkpoints:
             result.append({
@@ -329,19 +433,22 @@ def cmd_checkpoint_list(args: argparse.Namespace) -> None:
             print(f"{cp.id}: {cp.create_time}{comment}")
 
 
-def cmd_checkpoint_create(args: argparse.Namespace) -> None:
+def cmd_checkpoint_create(client: SpritesClient, sprite_name: str, args: List[str]) -> None:
     """Create checkpoint."""
     print("Checkpoint creation requires streaming support (not yet implemented)")
     sys.exit(1)
 
 
-def cmd_checkpoint_get(args: argparse.Namespace) -> None:
+def cmd_checkpoint_get(client: SpritesClient, sprite_name: str, args: List[str], as_json: bool) -> None:
     """Get checkpoint details."""
-    client = get_client()
-    sprite = client.sprite(args.sprite)
+    if len(args) < 1:
+        print("Error: checkpoint ID is required", file=sys.stderr)
+        sys.exit(1)
 
-    cp = sprite.get_checkpoint(args.id)
-    if args.json:
+    sprite = client.sprite(sprite_name)
+    cp = sprite.get_checkpoint(args[0])
+
+    if as_json:
         print(json.dumps({
             "id": cp.id,
             "create_time": cp.create_time.isoformat(),
@@ -359,113 +466,110 @@ def cmd_checkpoint_get(args: argparse.Namespace) -> None:
 
 def main() -> None:
     """Main entry point."""
-    parser = argparse.ArgumentParser(
-        description="Test CLI for Sprites Python SDK",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument("--sprite", "-s", help="Sprite name (required for most commands)")
-    parser.add_argument("--workdir", "-w", help="Working directory for filesystem operations")
-    parser.add_argument("--json", "-j", action="store_true", help="Output as JSON")
+    options, args = parse_args(sys.argv)
 
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    if len(args) == 0:
+        print(__doc__)
+        sys.exit(1)
 
-    # Sprite lifecycle commands
-    create_parser = subparsers.add_parser("create", help="Create a new sprite")
-    create_parser.add_argument("name", help="Sprite name")
-    create_parser.set_defaults(func=cmd_create)
+    command = args[0]
+    command_args = args[1:]
 
-    destroy_parser = subparsers.add_parser("destroy", help="Destroy a sprite")
-    destroy_parser.add_argument("name", help="Sprite name")
-    destroy_parser.set_defaults(func=cmd_destroy)
+    client = get_client(options["base_url"])
 
-    list_parser = subparsers.add_parser("list", help="List all sprites")
-    list_parser.set_defaults(func=cmd_list)
+    # Commands that don't need sprite
+    if command == "create":
+        cmd_create(client, command_args)
+        return
+
+    if command == "destroy":
+        cmd_destroy(client, command_args)
+        return
+
+    if command == "list":
+        cmd_list(client)
+        return
+
+    # Commands that need sprite
+    sprite_name = options.get("sprite")
+    workdir = options.get("dir")
+    as_json = options.get("json", False)
 
     # Filesystem commands
-    fs_read = subparsers.add_parser("fs-read", help="Read file contents")
-    fs_read.add_argument("path", help="File path")
-    fs_read.add_argument("--binary", "-b", action="store_true", help="Read as binary")
-    fs_read.set_defaults(func=cmd_fs_read)
+    if command.startswith("fs-"):
+        if not sprite_name:
+            print(f"Error: -sprite is required for {command} command", file=sys.stderr)
+            sys.exit(1)
 
-    fs_write = subparsers.add_parser("fs-write", help="Write content to file")
-    fs_write.add_argument("path", help="File path")
-    fs_write.add_argument("content", nargs="?", help="Content to write")
-    fs_write.add_argument("--mode", "-m", help="File mode (octal, e.g., 0644)")
-    fs_write.add_argument("--stdin", action="store_true", help="Read content from stdin")
-    fs_write.set_defaults(func=cmd_fs_write)
+        flags = parse_fs_flags(command_args)
 
-    fs_list = subparsers.add_parser("fs-list", help="List directory contents")
-    fs_list.add_argument("path", help="Directory path")
-    fs_list.set_defaults(func=cmd_fs_list)
-
-    fs_stat = subparsers.add_parser("fs-stat", help="Get file/directory stats")
-    fs_stat.add_argument("path", help="File/directory path")
-    fs_stat.set_defaults(func=cmd_fs_stat)
-
-    fs_mkdir = subparsers.add_parser("fs-mkdir", help="Create directory")
-    fs_mkdir.add_argument("path", help="Directory path")
-    fs_mkdir.add_argument("--mode", "-m", help="Directory mode (octal, e.g., 0755)")
-    fs_mkdir.add_argument("--parents", "-p", action="store_true", help="Create parent directories")
-    fs_mkdir.add_argument("--exist-ok", action="store_true", help="Don't error if exists")
-    fs_mkdir.set_defaults(func=cmd_fs_mkdir)
-
-    fs_rm = subparsers.add_parser("fs-rm", help="Remove file or directory")
-    fs_rm.add_argument("path", help="File/directory path")
-    fs_rm.add_argument("--recursive", "-r", action="store_true", help="Remove recursively")
-    fs_rm.add_argument("--force", "-f", action="store_true", help="Ignore if not exists")
-    fs_rm.set_defaults(func=cmd_fs_rm)
-
-    fs_rename = subparsers.add_parser("fs-rename", help="Rename/move file or directory")
-    fs_rename.add_argument("source", help="Source path")
-    fs_rename.add_argument("dest", help="Destination path")
-    fs_rename.set_defaults(func=cmd_fs_rename)
-
-    fs_copy = subparsers.add_parser("fs-copy", help="Copy file or directory")
-    fs_copy.add_argument("source", help="Source path")
-    fs_copy.add_argument("dest", help="Destination path")
-    fs_copy.add_argument("--recursive", "-r", action="store_true", default=True,
-                         help="Copy recursively (default)")
-    fs_copy.set_defaults(func=cmd_fs_copy)
-
-    fs_chmod = subparsers.add_parser("fs-chmod", help="Change file permissions")
-    fs_chmod.add_argument("path", help="File/directory path")
-    fs_chmod.add_argument("mode", help="New mode (octal, e.g., 0755)")
-    fs_chmod.add_argument("--recursive", "-r", action="store_true", help="Apply recursively")
-    fs_chmod.set_defaults(func=cmd_fs_chmod)
+        if command == "fs-read":
+            cmd_fs_read(client, sprite_name, workdir, flags)
+        elif command == "fs-write":
+            cmd_fs_write(client, sprite_name, workdir, flags)
+        elif command == "fs-list":
+            cmd_fs_list(client, sprite_name, workdir, flags)
+        elif command == "fs-stat":
+            cmd_fs_stat(client, sprite_name, workdir, flags)
+        elif command == "fs-mkdir":
+            cmd_fs_mkdir(client, sprite_name, workdir, flags)
+        elif command == "fs-rm":
+            cmd_fs_rm(client, sprite_name, workdir, flags)
+        elif command == "fs-rename":
+            cmd_fs_rename(client, sprite_name, workdir, flags)
+        elif command == "fs-copy":
+            cmd_fs_copy(client, sprite_name, workdir, flags)
+        elif command == "fs-chmod":
+            cmd_fs_chmod(client, sprite_name, workdir, flags)
+        else:
+            print(f"Error: unknown fs command: {command}", file=sys.stderr)
+            sys.exit(1)
+        return
 
     # Policy commands
-    policy_get = subparsers.add_parser("policy-get", help="Get network policy")
-    policy_get.set_defaults(func=cmd_policy_get)
+    if command == "policy":
+        if not sprite_name:
+            print("Error: -sprite is required for policy command", file=sys.stderr)
+            sys.exit(1)
 
-    policy_set = subparsers.add_parser("policy-set", help="Set network policy")
-    policy_set.add_argument("policy", help="Policy JSON")
-    policy_set.set_defaults(func=cmd_policy_set)
+        if len(command_args) == 0:
+            print("Error: policy subcommand required (get, set)", file=sys.stderr)
+            sys.exit(1)
+
+        subcommand = command_args[0]
+        if subcommand == "get":
+            cmd_policy_get(client, sprite_name)
+        elif subcommand == "set":
+            cmd_policy_set(client, sprite_name, command_args[1:])
+        else:
+            print(f"Error: unknown policy subcommand: {subcommand}", file=sys.stderr)
+            sys.exit(1)
+        return
 
     # Checkpoint commands
-    cp_list = subparsers.add_parser("checkpoint-list", help="List checkpoints")
-    cp_list.set_defaults(func=cmd_checkpoint_list)
+    if command == "checkpoint":
+        if not sprite_name:
+            print("Error: -sprite is required for checkpoint command", file=sys.stderr)
+            sys.exit(1)
 
-    cp_create = subparsers.add_parser("checkpoint-create", help="Create checkpoint")
-    cp_create.add_argument("comment", nargs="?", help="Checkpoint comment")
-    cp_create.set_defaults(func=cmd_checkpoint_create)
+        if len(command_args) == 0:
+            print("Error: checkpoint subcommand required (list, create, get)", file=sys.stderr)
+            sys.exit(1)
 
-    cp_get = subparsers.add_parser("checkpoint-get", help="Get checkpoint details")
-    cp_get.add_argument("id", help="Checkpoint ID")
-    cp_get.set_defaults(func=cmd_checkpoint_get)
+        subcommand = command_args[0]
+        if subcommand == "list":
+            cmd_checkpoint_list(client, sprite_name, as_json)
+        elif subcommand == "create":
+            cmd_checkpoint_create(client, sprite_name, command_args[1:])
+        elif subcommand == "get":
+            cmd_checkpoint_get(client, sprite_name, command_args[1:], as_json)
+        else:
+            print(f"Error: unknown checkpoint subcommand: {subcommand}", file=sys.stderr)
+            sys.exit(1)
+        return
 
-    args = parser.parse_args()
-
-    if not args.command:
-        parser.print_help()
-        sys.exit(1)
-
-    # Check if sprite is required
-    sprite_required = args.command.startswith("fs-") or args.command.startswith("policy-") or args.command.startswith("checkpoint-")
-    if sprite_required and not args.sprite:
-        print(f"Error: --sprite is required for {args.command}", file=sys.stderr)
-        sys.exit(1)
-
-    args.func(args)
+    print(f"Error: unknown command: {command}", file=sys.stderr)
+    sys.exit(1)
 
 
 if __name__ == "__main__":
