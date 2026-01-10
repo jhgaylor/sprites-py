@@ -474,8 +474,14 @@ def cmd_policy_set(client: SpritesClient, sprite_name: str, args: List[str]) -> 
 
     try:
         data = json.loads(args[0])
+
+        # Validate that 'rules' key is present (server requires it)
+        if "rules" not in data:
+            print("Error: missing required key: rules", file=sys.stderr)
+            sys.exit(1)
+
         rules = []
-        for r in data.get("rules", []):
+        for r in data["rules"]:
             rules.append(PolicyRule(
                 domain=r.get("domain"),
                 action=r.get("action"),
