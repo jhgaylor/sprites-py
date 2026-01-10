@@ -301,8 +301,15 @@ async def run_ws_command(cmd: Cmd) -> int:
     ws_cmd = WSCommand(cmd)
     ws_cmd.text_message_handler = cmd._text_message_handler
 
-    await ws_cmd.start()
-    exit_code = await ws_cmd.wait()
+    try:
+        await ws_cmd.start()
+        exit_code = await ws_cmd.wait()
+    except Exception:
+        # If connection or I/O fails, return error exit code
+        exit_code = 1
+    finally:
+        # Ensure connection is closed
+        await ws_cmd.close()
 
     # Copy buffered output if cmd is capturing
     if cmd._capture_stdout:
