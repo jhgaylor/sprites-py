@@ -163,12 +163,18 @@ class WSCommand:
                 await self._handle_message(message)
 
         except ConnectionClosed as e:
-            # Normal closure - extract exit code from close code if available
+            # Extract exit code from close code
             if e.code == 1000:  # Normal closure
                 if self.exit_code < 0:
                     self.exit_code = 0
+            else:
+                # Non-normal closure - treat as error
+                if self.exit_code < 0:
+                    self.exit_code = 1
         except Exception:
-            pass
+            # Any other exception - treat as error
+            if self.exit_code < 0:
+                self.exit_code = 1
         finally:
             self.done = True
             if stdin_task is not None:
