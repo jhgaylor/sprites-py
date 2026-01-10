@@ -5,7 +5,7 @@ Python SDK for [Sprites](https://sprites.dev) - remote command execution platfor
 ## Installation
 
 ```bash
-pip install sprites
+pip install sprites-py
 ```
 
 ## Quick Start
