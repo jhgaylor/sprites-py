@@ -282,6 +282,85 @@ class Sprite:
             history=cp.get("history"),
         )
 
+    def create_checkpoint(self, comment: str = ""):
+        """
+        Create a new checkpoint.
+
+        Args:
+            comment: Optional comment for the checkpoint
+
+        Returns:
+            Iterator of checkpoint creation messages
+        """
+        from .checkpoint import create_checkpoint
+        return create_checkpoint(self, comment)
+
+    def restore_checkpoint(self, checkpoint_id: str):
+        """
+        Restore a checkpoint.
+
+        Args:
+            checkpoint_id: Checkpoint ID to restore
+
+        Returns:
+            Iterator of restore messages
+        """
+        from .checkpoint import restore_checkpoint
+        return restore_checkpoint(self, checkpoint_id)
+
+    # ========== Command Execution API ==========
+
+    def command(
+        self,
+        *args: str,
+        env: Optional[Dict[str, str]] = None,
+        cwd: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ):
+        """
+        Create a command to run on this sprite.
+
+        Args:
+            *args: Command and arguments
+            env: Environment variables
+            cwd: Working directory
+            timeout: Command timeout in seconds
+
+        Returns:
+            Cmd object for executing the command
+        """
+        from .exec import Cmd
+        return Cmd(
+            sprite=self,
+            args=list(args),
+            env=env,
+            cwd=cwd,
+            timeout=timeout,
+        )
+
+    def attach_session(
+        self,
+        session_id: str,
+        timeout: Optional[float] = None,
+    ):
+        """
+        Attach to an existing session.
+
+        Args:
+            session_id: Session ID to attach to
+            timeout: Command timeout in seconds
+
+        Returns:
+            Cmd object for the attached session
+        """
+        from .exec import Cmd
+        return Cmd(
+            sprite=self,
+            args=[],
+            session_id=session_id,
+            timeout=timeout,
+        )
+
     # ========== Services API ==========
 
     def list_services(self) -> List[ServiceWithState]:
@@ -410,7 +489,7 @@ class Sprite:
         """
         try:
             response = self.client._client.get(
-                f"{self._base_url()}/policy",
+                f"{self._base_url()}/policy/network",
                 headers=self._headers(),
             )
         except httpx.RequestError as e:
@@ -452,8 +531,8 @@ class Sprite:
             rules.append(rule)
 
         try:
-            response = self.client._client.put(
-                f"{self._base_url()}/policy",
+            response = self.client._client.post(
+                f"{self._base_url()}/policy/network",
                 headers=self._headers(),
                 json={"rules": rules},
             )

@@ -163,12 +163,19 @@ class WSCommand:
                 await self._handle_message(message)
 
         except ConnectionClosed as e:
-            # Normal closure - extract exit code from close code if available
-            if e.code == 1000:  # Normal closure
-                if self.exit_code < 0:
-                    self.exit_code = 0
+            # Non-normal closure - treat as error
+            # Note: websockets library doesn't raise for normal closure (1000),
+            # the async for loop just exits. We handle that in the else clause.
+            if self.exit_code < 0:
+                self.exit_code = 1
         except Exception:
-            pass
+            # Any other exception - treat as error
+            if self.exit_code < 0:
+                self.exit_code = 1
+        else:
+            # Loop completed normally (connection closed with code 1000)
+            if self.exit_code < 0:
+                self.exit_code = 0
         finally:
             self.done = True
             if stdin_task is not None:
@@ -294,8 +301,15 @@ async def run_ws_command(cmd: Cmd) -> int:
     ws_cmd = WSCommand(cmd)
     ws_cmd.text_message_handler = cmd._text_message_handler
 
-    await ws_cmd.start()
-    exit_code = await ws_cmd.wait()
+    try:
+        await ws_cmd.start()
+        exit_code = await ws_cmd.wait()
+    except Exception:
+        # If connection or I/O fails, return error exit code
+        exit_code = 1
+    finally:
+        # Ensure connection is closed
+        await ws_cmd.close()
 
     # Copy buffered output if cmd is capturing
     if cmd._capture_stdout:

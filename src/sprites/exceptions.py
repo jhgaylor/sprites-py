@@ -25,6 +25,20 @@ class NotFoundError(SpriteError):
     pass
 
 
+class APIError(SpriteError):
+    """API request failed."""
+
+    def __init__(
+        self,
+        message: str,
+        status_code: Optional[int] = None,
+        response: Optional[str] = None
+    ):
+        super().__init__(message)
+        self.status_code = status_code
+        self.response = response
+
+
 class ExecError(SpriteError):
     """Command execution failed with non-zero exit code."""
 
@@ -36,9 +50,22 @@ class ExecError(SpriteError):
         stderr: bytes = b""
     ):
         super().__init__(message)
-        self.exit_code = exit_code
+        self._exit_code = exit_code
         self.stdout = stdout
         self.stderr = stderr
+
+    def exit_code(self) -> int:
+        """Return the exit code of the command."""
+        return self._exit_code
+
+
+# Alias for compatibility with Go SDK naming
+ExitError = ExecError
+
+
+class TimeoutError(SpriteError):
+    """Command execution timed out."""
+    pass
 
 
 class FilesystemError(SpriteError):
