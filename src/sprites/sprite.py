@@ -531,7 +531,7 @@ class Sprite:
             rules.append(rule)
 
         try:
-            response = self.client._client.put(
+            response = self.client._client.post(
                 f"{self._base_url()}/policy/network",
                 headers=self._headers(),
                 json={"rules": rules},
