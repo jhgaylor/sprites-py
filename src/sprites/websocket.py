@@ -113,12 +113,15 @@ class WSCommand:
             max_size=10 * 1024 * 1024,  # 10MB max message size
         )
 
+        # Start I/O loop in background IMMEDIATELY after connect
+        # This must happen before any other awaits to avoid missing messages
+        self._io_task = asyncio.create_task(self._run_io())
+        # Yield to let the I/O task start reading before we return
+        await asyncio.sleep(0)
+
         # When attaching to an existing session, wait for session_info to determine TTY mode
         if self._is_attach:
             await self._wait_for_session_info()
-
-        # Start I/O loop in background
-        self._io_task = asyncio.create_task(self._run_io())
 
     async def _wait_for_session_info(self) -> None:
         """Wait for session_info message when attaching."""
@@ -152,24 +155,35 @@ class WSCommand:
         try:
             # Handle stdin in background if provided
             stdin_task: asyncio.Task[None] | None = None
+            eof_task: asyncio.Task[None] | None = None
             if self.cmd.stdin is not None:
                 stdin_task = asyncio.create_task(self._copy_stdin())
             else:
-                # Send EOF immediately if no stdin
-                await self._send_stdin_eof()
+                # Send EOF as a background task - don't block before reading
+                eof_task = asyncio.create_task(self._send_stdin_eof())
 
-            # Process incoming messages
+            # Process incoming messages - start reading immediately
+            # EOF task will run concurrently when we yield on message receive
             async for message in self.ws:
                 await self._handle_message(message)
 
         except ConnectionClosed as e:
-            # Non-normal closure - treat as error
-            # Note: websockets library doesn't raise for normal closure (1000),
-            # the async for loop just exits. We handle that in the else clause.
-            if self.exit_code < 0:
-                self.exit_code = 1
-        except Exception:
+            # Check if this is a normal closure (code 1000)
+            # The websockets library can sometimes raise ConnectionClosed even for normal closures
+            if e.code == 1000:
+                # Normal closure - treat as success if no exit code received
+                if self.exit_code < 0:
+                    self.exit_code = 0
+            else:
+                # Non-normal closure - treat as error
+                error_msg = f"WebSocket ConnectionClosed: code={e.code}, reason={e.reason}\n"
+                self._stderr_buffer.extend(error_msg.encode())
+                if self.exit_code < 0:
+                    self.exit_code = 1
+        except Exception as e:
             # Any other exception - treat as error
+            error_msg = f"WebSocket I/O error: {type(e).__name__}: {e}\n"
+            self._stderr_buffer.extend(error_msg.encode())
             if self.exit_code < 0:
                 self.exit_code = 1
         else:
@@ -178,11 +192,18 @@ class WSCommand:
                 self.exit_code = 0
         finally:
             self.done = True
+            # Clean up stdin task
             if stdin_task is not None:
                 stdin_task.cancel()
                 try:
                     await stdin_task
                 except asyncio.CancelledError:
+                    pass
+            # Ensure EOF task completed (don't cancel - it should finish quickly)
+            if eof_task is not None and not eof_task.done():
+                try:
+                    await eof_task
+                except Exception:
                     pass
 
     async def _handle_message(self, message: str | bytes) -> None:
@@ -222,6 +243,7 @@ class WSCommand:
                     self.cmd.stderr.write(payload)
             elif stream_id == StreamID.EXIT:
                 self.exit_code = payload[0] if payload else 0
+                # Close connection after receiving EXIT
                 if self.ws:
                     await self.ws.close()
 
@@ -271,7 +293,19 @@ class WSCommand:
     async def wait(self) -> int:
         """Wait for command to complete and return exit code."""
         if self._io_task is not None:
-            await self._io_task
+            try:
+                await self._io_task
+            except Exception as e:
+                # Task failed unexpectedly
+                error_msg = f"WebSocket task failed: {type(e).__name__}: {e}\n"
+                self._stderr_buffer.extend(error_msg.encode())
+                if self.exit_code < 0:
+                    self.exit_code = 1
+        # Safeguard: exit_code should never be -1 at this point
+        if self.exit_code < 0:
+            error_msg = "WebSocket error: exit code not set\n"
+            self._stderr_buffer.extend(error_msg.encode())
+            self.exit_code = 1
         return self.exit_code
 
     async def close(self) -> None:
@@ -304,8 +338,11 @@ async def run_ws_command(cmd: Cmd) -> int:
     try:
         await ws_cmd.start()
         exit_code = await ws_cmd.wait()
-    except Exception:
-        # If connection or I/O fails, return error exit code
+    except Exception as e:
+        # If connection or I/O fails, store error message in stderr buffer
+        # and return error exit code
+        error_msg = f"WebSocket error: {type(e).__name__}: {e}\n"
+        ws_cmd._stderr_buffer.extend(error_msg.encode())
         exit_code = 1
     finally:
         # Ensure connection is closed
@@ -315,6 +352,9 @@ async def run_ws_command(cmd: Cmd) -> int:
     if cmd._capture_stdout:
         cmd._stdout_data = ws_cmd.get_stdout()
     if cmd._capture_stderr:
+        cmd._stderr_data = ws_cmd.get_stderr()
+    # Always copy stderr on error for debugging, even if not explicitly capturing
+    elif exit_code != 0:
         cmd._stderr_data = ws_cmd.get_stderr()
 
     return exit_code
