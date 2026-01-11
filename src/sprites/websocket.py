@@ -166,6 +166,9 @@ class WSCommand:
             # EOF task will run concurrently when we yield on message receive
             async for message in self.ws:
                 await self._handle_message(message)
+                # Exit loop when EXIT message received
+                if self.done:
+                    break
 
         except ConnectionClosed as e:
             # Check if this is a normal closure (code 1000)
@@ -243,9 +246,8 @@ class WSCommand:
                     self.cmd.stderr.write(payload)
             elif stream_id == StreamID.EXIT:
                 self.exit_code = payload[0] if payload else 0
-                # Close connection after receiving EXIT
-                if self.ws:
-                    await self.ws.close()
+                # Mark as done - the connection will close and loop will exit
+                self.done = True
 
     async def _copy_stdin(self) -> None:
         """Copy data from stdin to WebSocket."""
