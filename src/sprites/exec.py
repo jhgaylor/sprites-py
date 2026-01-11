@@ -105,7 +105,7 @@ class Cmd:
         """
         code = self._run_sync()
         if code != 0:
-            raise ExitError(code, self._stdout_data, self._stderr_data)
+            raise ExitError(f"exit status {code}", code, self._stdout_data, self._stderr_data)
 
     def output(self) -> bytes:
         """Run command and return stdout (like exec.Cmd.Output).
@@ -125,7 +125,7 @@ class Cmd:
         code = self._run_sync()
 
         if code != 0:
-            raise ExitError(code, self._stdout_data, self._stderr_data)
+            raise ExitError(f"exit status {code}", code, self._stdout_data, self._stderr_data)
 
         return self._stdout_data
 
@@ -153,7 +153,7 @@ class Cmd:
         combined = self._stdout_data + self._stderr_data
 
         if code != 0:
-            raise ExitError(code, combined, b"")
+            raise ExitError(f"exit status {code}", code, combined, b"")
 
         return combined
 
@@ -265,6 +265,6 @@ def run(
     )
 
     if check and code != 0:
-        raise ExitError(code, result.stdout or b"", result.stderr or b"")
+        raise ExitError(f"exit status {code}", code, result.stdout or b"", result.stderr or b"")
 
     return result

@@ -618,12 +618,19 @@ def cmd_exec(
         if output_mode in ("stdout", "combined") and e.stdout:
             sys.stdout.buffer.write(e.stdout)
             sys.stdout.buffer.flush()
+        # Write error info to stdout for test harness capture
+        error_msg = f"ExitError: exit code {exit_code}"
+        if e.stderr:
+            error_msg += f", stderr: {e.stderr.decode('utf-8', errors='replace')}"
+        print(error_msg)
         sys.exit(exit_code)
     except SpriteTimeoutError as e:
-        print(f"Command timed out: {e}", file=sys.stderr)
+        # Write to stdout for test harness capture
+        print(f"Command timed out: {e}")
         sys.exit(1)
     except Exception as e:
-        print(f"Command failed: {e}", file=sys.stderr)
+        # Write to stdout for test harness capture
+        print(f"Command failed: {e}")
         sys.exit(1)
 
 
