@@ -14,12 +14,11 @@ client = SpritesClient(token)
 sprite = client.get_sprite(sprite_name)
 
 result = {"name": sprite.name}
-if sprite.info:
-    if sprite.info.id:
-        result["id"] = sprite.info.id
-    if sprite.info.status:
-        result["status"] = sprite.info.status
-    if sprite.info.url:
-        result["url"] = sprite.info.url
+if sprite.id:
+    result["id"] = sprite.id
+if sprite.status:
+    result["status"] = sprite.status
+if sprite.url:
+    result["url"] = sprite.url
 
 print(json.dumps(result, indent=2))

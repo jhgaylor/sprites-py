@@ -13,7 +13,7 @@ client = SpritesClient(token)
 sprites = client.list_sprites()
 
 result = []
-for s in sprites:
+for s in sprites.sprites:
     item = {"name": s.name}
     if s.id:
         item["id"] = s.id
