@@ -9,7 +9,9 @@ from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import urlencode
 
 import websockets
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, InvalidStatusCode
+
+from sprites.exceptions import parse_api_error
 
 if TYPE_CHECKING:
     from sprites.exec import Cmd
@@ -105,13 +107,29 @@ class WSCommand:
         url = self._build_websocket_url()
         headers = {"Authorization": f"Bearer {self.cmd.sprite.client.token}"}
 
-        self.ws = await websockets.connect(
-            url,
-            additional_headers=headers,
-            ping_interval=WS_PING_INTERVAL,
-            ping_timeout=WS_PONG_WAIT,
-            max_size=10 * 1024 * 1024,  # 10MB max message size
-        )
+        try:
+            self.ws = await websockets.connect(
+                url,
+                additional_headers=headers,
+                ping_interval=WS_PING_INTERVAL,
+                ping_timeout=WS_PONG_WAIT,
+                max_size=10 * 1024 * 1024,  # 10MB max message size
+            )
+        except InvalidStatusCode as e:
+            # Try to parse as a structured API error
+            body = b""
+            response_headers: dict[str, str] = {}
+            if hasattr(e, "response") and e.response is not None:
+                # websockets >= 12.0 provides response object
+                if hasattr(e.response, "body"):
+                    body = e.response.body or b""
+                if hasattr(e.response, "headers"):
+                    response_headers = dict(e.response.headers)
+            api_err = parse_api_error(e.status_code, body, response_headers)
+            if api_err is not None:
+                raise api_err from None
+            # Fall back to original exception
+            raise
 
         # Start I/O loop in background IMMEDIATELY after connect
         # This must happen before any other awaits to avoid missing messages
