@@ -232,6 +232,7 @@ class ControlConnection:
             additional_headers=headers,
             ping_interval=WS_PING_INTERVAL,
             ping_timeout=WS_PONG_WAIT,
+            close_timeout=2,  # Faster close handshake for clean shutdown
             max_size=10 * 1024 * 1024,  # 10MB
         )
 
@@ -386,21 +387,45 @@ class ControlConnection:
         await self.ws.send(data)
 
     async def close(self) -> None:
-        """Close the control connection."""
+        """Close the control connection.
+
+        Proper close sequence per websockets library documentation:
+        1. Close the websocket (causes read loop to exit via ConnectionClosed)
+        2. Wait for the close to complete with wait_closed()
+        3. Wait for read task to finish naturally
+        """
         if self.op_conn is not None:
             self.op_conn.close()
-        if self.ws is not None:
-            await self.ws.close()
-            self.ws = None
-        self.closed = True
 
-        # Cancel read task
-        if self._read_task is not None:
-            self._read_task.cancel()
+        # Close websocket first - this will cause the read loop to exit
+        # with ConnectionClosed exception, allowing proper cleanup
+        ws = self.ws
+        if ws is not None:
             try:
-                await self._read_task
-            except asyncio.CancelledError:
+                await ws.close()
+                # wait_closed() ensures all internal tasks (like keepalive) are done
+                await ws.wait_closed()
+            except Exception:
                 pass
+
+        # Now wait for read task to finish naturally (it will exit due to close)
+        if self._read_task is not None:
+            try:
+                # Wait with timeout in case read task is stuck
+                await asyncio.wait_for(self._read_task, timeout=2.0)
+            except asyncio.TimeoutError:
+                # If it doesn't finish, cancel as fallback
+                self._read_task.cancel()
+                try:
+                    await self._read_task
+                except asyncio.CancelledError:
+                    pass
+            except Exception:
+                pass
+            self._read_task = None
+
+        self.ws = None
+        self.closed = True
 
     def is_closed(self) -> bool:
         """Check if connection is closed."""
@@ -562,3 +587,40 @@ def has_control_connection(sprite: Sprite) -> bool:
     if key not in _control_pools:
         return False
     return _control_pools[key].has_connections()
+
+
+async def _close_all_pools() -> None:
+    """Close all control pools. Called on program exit."""
+    pools = list(_control_pools.values())
+    _control_pools.clear()
+    for pool in pools:
+        try:
+            await pool.close()
+        except Exception:
+            pass  # Ignore errors during cleanup
+
+    # Give background tasks time to clean up
+    await asyncio.sleep(0.1)
+
+
+def _cleanup_on_exit() -> None:
+    """Cleanup handler called on program exit."""
+    if not _control_pools:
+        return
+
+    try:
+        from sprites.loop import get_loop, stop_loop
+
+        loop = get_loop()
+        future = asyncio.run_coroutine_threadsafe(_close_all_pools(), loop)
+        future.result(timeout=5)
+
+        # Stop the event loop thread
+        stop_loop()
+    except Exception:
+        pass  # Ignore errors during cleanup
+
+
+# Register cleanup handler
+import atexit
+atexit.register(_cleanup_on_exit)

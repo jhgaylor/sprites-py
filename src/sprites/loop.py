@@ -73,15 +73,46 @@ def run_sync(coro: Coroutine[Any, Any, T], timeout: float | None = None) -> T:
         raise
 
 
-def _cleanup() -> None:
-    """Clean up the persistent event loop on exit."""
+async def _cancel_all_tasks(loop: asyncio.AbstractEventLoop) -> None:
+    """Cancel all pending tasks in the loop."""
+    tasks = [t for t in asyncio.all_tasks(loop) if t is not asyncio.current_task()]
+    for task in tasks:
+        task.cancel()
+
+    if tasks:
+        # Wait for all tasks to be cancelled
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def stop_loop() -> None:
+    """Stop the persistent event loop.
+
+    This should be called when all async work is done and you want to
+    cleanly shut down the background thread.
+    """
     global _loop, _thread
 
-    if _loop is not None and _loop.is_running():
-        _loop.call_soon_threadsafe(_loop.stop)
+    with _lock:
+        if _loop is not None and _loop.is_running():
+            # Cancel all pending tasks before stopping the loop
+            # This prevents "Task was destroyed but it is pending" warnings
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    _cancel_all_tasks(_loop), _loop
+                )
+                future.result(timeout=5.0)
+            except Exception:
+                pass
 
-        if _thread is not None:
-            _thread.join(timeout=2.0)
+            _loop.call_soon_threadsafe(_loop.stop)
 
-    _loop = None
-    _thread = None
+            if _thread is not None:
+                _thread.join(timeout=2.0)
+
+        _loop = None
+        _thread = None
+
+
+def _cleanup() -> None:
+    """Clean up the persistent event loop on exit."""
+    stop_loop()
