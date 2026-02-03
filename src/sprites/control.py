@@ -130,8 +130,9 @@ class OpConn:
                 if self.on_stderr:
                     self.on_stderr(payload)
             elif stream_id == StreamID.EXIT:
+                # Store exit code but DON'T signal done yet
+                # Wait for op.complete message to ensure proper sequencing
                 self.exit_code = payload[0] if payload else 0
-                self.close()
 
     def handle_text(self, data: str) -> None:
         """Handle text message (session_info, notifications, etc.).
@@ -330,13 +331,11 @@ class ControlConnection:
         if self.closed:
             raise RuntimeError(f"Control connection closed: {self.close_error}")
 
-        if self.op_active:
-            raise RuntimeError("Operation already in progress")
+        # Note: op_active is now managed by the pool, so we don't check it here
+        # The pool ensures only one caller has this connection at a time
 
         if self.ws is None:
             raise RuntimeError("WebSocket not connected")
-
-        self.op_active = True
         op_conn = OpConn(self, tty)
         self.op_conn = op_conn
 
@@ -408,43 +407,158 @@ class ControlConnection:
         return self.closed
 
 
-# Module-level cache for control connections
-_control_connections: Dict[str, ControlConnection] = {}
+# Default pool size
+DEFAULT_POOL_SIZE = 5
+
+
+class ControlPool:
+    """Manages a pool of control connections for concurrent operations."""
+
+    def __init__(self, sprite: Sprite, max_size: int = DEFAULT_POOL_SIZE):
+        """Initialize a control pool.
+
+        Args:
+            sprite: The sprite to connect to
+            max_size: Maximum number of connections in the pool
+        """
+        self.sprite = sprite
+        self.max_size = max_size
+        self.conns: list[ControlConnection] = []
+        self.waiters: list[asyncio.Future[ControlConnection]] = []
+        self.closed = False
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> ControlConnection:
+        """Acquire a connection from the pool.
+
+        Creates a new connection if the pool isn't full, otherwise waits.
+
+        Returns:
+            ControlConnection that is ready for use
+        """
+        async with self._lock:
+            if self.closed:
+                raise RuntimeError("Pool is closed")
+
+            # Try to find an available connection
+            for cc in self.conns:
+                if not cc.is_closed() and not cc.op_active:
+                    cc.op_active = True  # Mark as in use
+                    return cc
+
+            # If pool isn't full, create a new connection
+            if len(self.conns) < self.max_size:
+                cc = ControlConnection(self.sprite)
+                await cc.connect()
+                self.conns.append(cc)
+                cc.op_active = True  # Mark as in use
+                return cc
+
+            # Pool is full, wait for a connection
+            waiter: asyncio.Future[ControlConnection] = asyncio.get_event_loop().create_future()
+            self.waiters.append(waiter)
+
+        # Wait outside the lock
+        return await waiter
+
+    def release(self, cc: ControlConnection) -> None:
+        """Release a connection back to the pool.
+
+        Args:
+            cc: The connection to release
+        """
+        cc.op_active = False
+        cc.op_conn = None
+
+        # If there are waiters, give them this connection
+        if self.waiters:
+            waiter = self.waiters.pop(0)
+            cc.op_active = True  # Mark as in use again
+            waiter.set_result(cc)
+
+    async def close(self) -> None:
+        """Close all connections in the pool."""
+        async with self._lock:
+            self.closed = True
+
+            # Cancel all waiters
+            for waiter in self.waiters:
+                waiter.cancel()
+            self.waiters = []
+
+            # Close all connections
+            for cc in self.conns:
+                await cc.close()
+            self.conns = []
+
+    def size(self) -> int:
+        """Return the current number of connections in the pool."""
+        return len(self.conns)
+
+    def has_connections(self) -> bool:
+        """Return True if the pool has any active connections."""
+        return len(self.conns) > 0
+
+
+# Module-level cache for control pools (one pool per sprite)
+_control_pools: Dict[str, ControlPool] = {}
 
 
 async def get_control_connection(sprite: Sprite) -> ControlConnection:
-    """Get or create a control connection for a sprite.
+    """Get a control connection from the pool for a sprite.
 
     Args:
         sprite: The sprite to connect to
 
     Returns:
-        ControlConnection instance
+        ControlConnection instance (caller must release when done)
     """
     key = f"{sprite.client.base_url}:{sprite.name}"
 
-    # Return existing connection if valid
-    if key in _control_connections:
-        cc = _control_connections[key]
-        if not cc.is_closed():
-            return cc
+    # Get or create pool
+    if key not in _control_pools:
+        _control_pools[key] = ControlPool(sprite)
 
-    # Create new connection
-    cc = ControlConnection(sprite)
-    await cc.connect()
-    _control_connections[key] = cc
+    pool = _control_pools[key]
+    return await pool.acquire()
 
-    return cc
+
+def release_control_connection(sprite: Sprite, cc: ControlConnection) -> None:
+    """Release a control connection back to the pool.
+
+    Args:
+        sprite: The sprite whose pool to release to
+        cc: The connection to release
+    """
+    key = f"{sprite.client.base_url}:{sprite.name}"
+
+    if key in _control_pools:
+        _control_pools[key].release(cc)
 
 
 async def close_control_connection(sprite: Sprite) -> None:
-    """Close the control connection for a sprite.
+    """Close the control pool for a sprite.
 
     Args:
-        sprite: The sprite whose connection to close
+        sprite: The sprite whose pool to close
     """
     key = f"{sprite.client.base_url}:{sprite.name}"
 
-    if key in _control_connections:
-        cc = _control_connections.pop(key)
-        await cc.close()
+    if key in _control_pools:
+        pool = _control_pools.pop(key)
+        await pool.close()
+
+
+def has_control_connection(sprite: Sprite) -> bool:
+    """Check if a sprite has any active control connections.
+
+    Args:
+        sprite: The sprite to check
+
+    Returns:
+        True if the sprite has active control connections
+    """
+    key = f"{sprite.client.base_url}:{sprite.name}"
+    if key not in _control_pools:
+        return False
+    return _control_pools[key].has_connections()

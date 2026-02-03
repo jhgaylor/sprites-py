@@ -568,3 +568,14 @@ class Sprite:
         """Close the control connection if open."""
         from .control import close_control_connection
         await close_control_connection(self)
+
+    def has_control_connection(self) -> bool:
+        """Check if this sprite has an active control connection.
+
+        This can be used to verify that control mode is being used.
+
+        Returns:
+            True if a control connection pool exists with active connections
+        """
+        from .control import has_control_connection
+        return has_control_connection(self)
