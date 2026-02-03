@@ -432,19 +432,21 @@ class ControlConnection:
         return self.closed
 
 
-# Default pool size
-DEFAULT_POOL_SIZE = 5
+# Pool configuration (matches Go SDK)
+MAX_POOL_SIZE = 100  # Sanity cap - checkout fails if pool is full
+POOL_DRAIN_THRESHOLD = 20  # When release and size > this, drain idle conns
+POOL_DRAIN_TARGET = 10  # Drain down to this many conns when draining
 
 
 class ControlPool:
     """Manages a pool of control connections for concurrent operations."""
 
-    def __init__(self, sprite: Sprite, max_size: int = DEFAULT_POOL_SIZE):
+    def __init__(self, sprite: Sprite, max_size: int = MAX_POOL_SIZE):
         """Initialize a control pool.
 
         Args:
             sprite: The sprite to connect to
-            max_size: Maximum number of connections in the pool
+            max_size: Maximum number of connections in the pool (default 100)
         """
         self.sprite = sprite
         self.max_size = max_size
@@ -500,6 +502,40 @@ class ControlPool:
             waiter = self.waiters.pop(0)
             cc.op_active = True  # Mark as in use again
             waiter.set_result(cc)
+            return
+
+        # Try to drain idle connections if pool is large
+        self._try_drain()
+
+    def _try_drain(self) -> None:
+        """Drain idle connections when pool is large.
+
+        When pool size exceeds POOL_DRAIN_THRESHOLD, close idle connections
+        down to POOL_DRAIN_TARGET.
+        """
+        if self.closed or len(self.conns) <= POOL_DRAIN_THRESHOLD:
+            return
+
+        # Find idle connections (not active, not closed)
+        idle_conns = [
+            cc for cc in self.conns
+            if not cc.op_active and not cc.is_closed()
+        ]
+
+        # Sort by least recently used (we don't track last_used, so just take from end)
+        to_close = len(self.conns) - POOL_DRAIN_TARGET
+        if to_close <= 0:
+            return
+
+        # Close idle connections
+        closed = 0
+        for cc in idle_conns:
+            if closed >= to_close:
+                break
+            # Close async in background
+            asyncio.create_task(cc.close())
+            self.conns.remove(cc)
+            closed += 1
 
     async def close(self) -> None:
         """Close all connections in the pool."""
