@@ -7,13 +7,13 @@ from sprites import SpritesClient
 class TestControlModeClientOptions:
     """Tests for control mode client options."""
 
-    def test_control_mode_false_by_default(self):
-        """Control mode should be disabled by default."""
+    def test_control_mode_true_by_default(self):
+        """Control mode should be enabled by default for efficient connection reuse."""
         client = SpritesClient(token="test-token")
-        assert client.control_mode is False
+        assert client.control_mode is True
 
-    def test_control_mode_enabled(self):
-        """Control mode should be enabled when specified."""
+    def test_control_mode_enabled_explicitly(self):
+        """Control mode should be enabled when explicitly specified."""
         client = SpritesClient(token="test-token", control_mode=True)
         assert client.control_mode is True
 
@@ -39,10 +39,10 @@ class TestSpriteControlMode:
         assert sprite.use_control_mode() is False
 
     def test_reflects_client_control_mode_default(self):
-        """Sprite should reflect default client control mode (False)."""
+        """Sprite should reflect default client control mode (True - enabled by default)."""
         client = SpritesClient(token="test-token")
         sprite = client.sprite("test-sprite")
-        assert sprite.use_control_mode() is False
+        assert sprite.use_control_mode() is True
 
 
 class TestControlURLBuilding:
