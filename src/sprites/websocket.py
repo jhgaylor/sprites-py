@@ -352,6 +352,10 @@ async def run_ws_command(cmd: Cmd) -> int:
     Returns:
         The exit code of the command.
     """
+    # Use control mode if enabled (except for attach operations)
+    if cmd.session_id is None and cmd.sprite.use_control_mode():
+        return await run_ws_command_via_control(cmd)
+
     ws_cmd = WSCommand(cmd)
     ws_cmd.text_message_handler = cmd._text_message_handler
 
@@ -378,3 +382,62 @@ async def run_ws_command(cmd: Cmd) -> int:
         cmd._stderr_data = ws_cmd.get_stderr()
 
     return exit_code
+
+
+async def run_ws_command_via_control(cmd: Cmd) -> int:
+    """Run a command via the control connection for multiplexed operations.
+
+    Args:
+        cmd: The command to execute.
+
+    Returns:
+        The exit code of the command.
+    """
+    from sprites.control import get_control_connection, release_control_connection
+
+    cc = None
+    try:
+        # Get a control connection from the pool
+        cc = await get_control_connection(cmd.sprite)
+
+        # Build operation arguments
+        args: dict[str, Any] = {"cmd": cmd.args}
+
+        # Add environment variables
+        if cmd.env:
+            args["env"] = [f"{k}={v}" for k, v in cmd.env.items()]
+
+        # Add working directory
+        if cmd.dir:
+            args["dir"] = cmd.dir
+
+        # Add TTY settings
+        if cmd.tty:
+            args["tty"] = True
+            args["rows"] = cmd.tty_rows
+            args["cols"] = cmd.tty_cols
+
+        # Add stdin indicator
+        args["stdin"] = cmd.stdin is not None
+
+        # Start the exec operation
+        op = await cc.start_op("exec", **args)
+
+        # Wait for operation to complete
+        exit_code = await op.wait()
+
+        # Copy output
+        cmd._stdout_data = op.get_stdout()
+        cmd._stderr_data = op.get_stderr()
+
+        return exit_code
+
+    except Exception as e:
+        # If control mode fails, store error message in stderr buffer
+        error_msg = f"Control mode error: {type(e).__name__}: {e}\n"
+        cmd._stderr_data = error_msg.encode()
+        return 1
+    finally:
+        # Always release the connection back to the pool
+        if cc is not None:
+            release_control_connection(cmd.sprite, cc)

@@ -26,6 +26,7 @@ from .exceptions import (
 if TYPE_CHECKING:
     from .client import SpritesClient
     from .filesystem import SpriteFilesystem
+    from .control import ControlConnection
 
 
 class Sprite:
@@ -543,3 +544,38 @@ class Sprite:
             raise SpriteError(
                 f"Failed to update network policy (status {response.status_code}): {response.text}"
             )
+
+    # ========== Control Connection API ==========
+
+    def use_control_mode(self) -> bool:
+        """Check if control mode is enabled for this sprite.
+
+        Returns:
+            True if control mode is enabled
+        """
+        return self.client.control_mode
+
+    async def get_control_connection(self) -> "ControlConnection":
+        """Get or create a control connection for multiplexed operations.
+
+        Returns:
+            ControlConnection instance
+        """
+        from .control import get_control_connection
+        return await get_control_connection(self)
+
+    async def close_control_connection(self) -> None:
+        """Close the control connection if open."""
+        from .control import close_control_connection
+        await close_control_connection(self)
+
+    def has_control_connection(self) -> bool:
+        """Check if this sprite has an active control connection.
+
+        This can be used to verify that control mode is being used.
+
+        Returns:
+            True if a control connection pool exists with active connections
+        """
+        from .control import has_control_connection
+        return has_control_connection(self)

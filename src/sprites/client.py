@@ -28,7 +28,8 @@ class SpritesClient:
         self,
         token: str,
         base_url: str = "https://api.sprites.dev",
-        timeout: float = 30.0
+        timeout: float = 30.0,
+        control_mode: bool = True,
     ):
         """
         Initialize the Sprites client.
@@ -37,10 +38,12 @@ class SpritesClient:
             token: Authentication token
             base_url: Base URL for the API (default: https://api.sprites.dev)
             timeout: HTTP request timeout in seconds (default: 30.0)
+            control_mode: Enable control mode for multiplexed WebSocket operations (default: True)
         """
         self.token = token
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.control_mode = control_mode
         self._client = httpx.Client(timeout=timeout)
 
     def __enter__(self) -> "SpritesClient":
