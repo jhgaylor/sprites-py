@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import urlencode
 
 import websockets
-from websockets.exceptions import ConnectionClosed, InvalidStatusCode
+from websockets.exceptions import ConnectionClosed, InvalidStatusCode, InvalidStatus
 
 from sprites.exceptions import parse_api_error
 
@@ -352,6 +352,10 @@ async def run_ws_command(cmd: Cmd) -> int:
     Returns:
         The exit code of the command.
     """
+    # Use control mode if enabled (except for attach operations)
+    if cmd.session_id is None and cmd.sprite.use_control_mode():
+        return await run_ws_command_via_control(cmd)
+
     ws_cmd = WSCommand(cmd)
     ws_cmd.text_message_handler = cmd._text_message_handler
 
@@ -378,3 +382,106 @@ async def run_ws_command(cmd: Cmd) -> int:
         cmd._stderr_data = ws_cmd.get_stderr()
 
     return exit_code
+
+
+async def _run_ws_command_direct(cmd: Cmd) -> int:
+    """Run a command via direct WebSocket (no control mode).
+
+    Args:
+        cmd: The command to execute.
+
+    Returns:
+        The exit code of the command.
+    """
+    ws_cmd = WSCommand(cmd)
+    ws_cmd.text_message_handler = cmd._text_message_handler
+
+    try:
+        await ws_cmd.start()
+        exit_code = await ws_cmd.wait()
+    except Exception as e:
+        error_msg = f"WebSocket error: {type(e).__name__}: {e}\n"
+        ws_cmd._stderr_buffer.extend(error_msg.encode())
+        exit_code = 1
+    finally:
+        await ws_cmd.close()
+
+    # Copy buffered output if cmd is capturing
+    if cmd._capture_stdout:
+        cmd._stdout_data = ws_cmd.get_stdout()
+    if cmd._capture_stderr:
+        cmd._stderr_data = ws_cmd.get_stderr()
+    elif exit_code != 0:
+        cmd._stderr_data = ws_cmd.get_stderr()
+
+    return exit_code
+
+
+async def run_ws_command_via_control(cmd: Cmd) -> int:
+    """Run a command via the control connection for multiplexed operations.
+
+    Args:
+        cmd: The command to execute.
+
+    Returns:
+        The exit code of the command.
+    """
+    from sprites.control import get_control_connection, release_control_connection
+
+    cc = None
+    try:
+        # Get a control connection from the pool
+        cc = await get_control_connection(cmd.sprite)
+
+        # Build operation arguments
+        args: dict[str, Any] = {"cmd": cmd.args}
+
+        # Add environment variables
+        if cmd.env:
+            args["env"] = [f"{k}={v}" for k, v in cmd.env.items()]
+
+        # Add working directory
+        if cmd.dir:
+            args["dir"] = cmd.dir
+
+        # Add TTY settings
+        if cmd.tty:
+            args["tty"] = True
+            args["rows"] = cmd.tty_rows
+            args["cols"] = cmd.tty_cols
+
+        # Add stdin indicator
+        args["stdin"] = cmd.stdin is not None
+
+        # Start the exec operation
+        op = await cc.start_op("exec", **args)
+
+        # Wait for operation to complete
+        exit_code = await op.wait()
+
+        # Copy output
+        cmd._stdout_data = op.get_stdout()
+        cmd._stderr_data = op.get_stderr()
+
+        return exit_code
+
+    except (InvalidStatusCode, InvalidStatus) as e:
+        # Control endpoint returned error (likely 404) - fall back to direct mode
+        # Release connection if we got one
+        if cc is not None:
+            release_control_connection(cmd.sprite, cc)
+            cc = None
+        # Mark sprite as not supporting control mode to avoid repeated failures
+        cmd.sprite._control_mode_supported = False
+        # Retry with direct WebSocket
+        return await _run_ws_command_direct(cmd)
+
+    except Exception as e:
+        # If control mode fails for other reasons, store error message in stderr buffer
+        error_msg = f"Control mode error: {type(e).__name__}: {e}\n"
+        cmd._stderr_data = error_msg.encode()
+        return 1
+    finally:
+        # Always release the connection back to the pool
+        if cc is not None:
+            release_control_connection(cmd.sprite, cc)
