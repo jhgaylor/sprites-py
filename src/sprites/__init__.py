@@ -23,7 +23,6 @@ Usage:
 from .client import SpritesClient
 from .sprite import Sprite
 from .filesystem import SpriteFilesystem, SpritePath
-from .control import ControlConnection, OpConn
 from .exceptions import (
     SpriteError,
     NetworkError,
@@ -70,8 +69,6 @@ __all__ = [
     "Sprite",
     "SpriteFilesystem",
     "SpritePath",
-    "ControlConnection",
-    "OpConn",
     # Exceptions
     "SpriteError",
     "NetworkError",

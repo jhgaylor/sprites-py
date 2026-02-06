@@ -164,11 +164,24 @@ class Cmd:
         self._started = True
 
         try:
-            # Use the persistent event loop for connection reuse
-            from sprites.loop import run_sync
-            return run_sync(self._run_async(), timeout=self.timeout)
+            # Get or create event loop
+            try:
+                loop = asyncio.get_running_loop()
+                # We're already in an async context - need to run in new thread
+                import concurrent.futures
+
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(self._run_in_new_loop)
+                    return future.result()
+            except RuntimeError:
+                # No running loop - we can create one
+                return asyncio.run(self._run_async())
         finally:
             self._finished = True
+
+    def _run_in_new_loop(self) -> int:
+        """Run the command in a new event loop."""
+        return asyncio.run(self._run_async())
 
     async def _run_async(self) -> int:
         """Run the command asynchronously."""
