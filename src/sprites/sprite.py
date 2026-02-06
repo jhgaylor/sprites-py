@@ -43,9 +43,6 @@ class Sprite:
         self.name = name
         self.client = client
 
-        # Control mode support flag (set to False when 404 is received)
-        self._control_mode_supported: bool = True
-
         # Additional properties from API
         self.id: Optional[str] = None
         self.organization_name: Optional[str] = None
@@ -554,9 +551,9 @@ class Sprite:
         """Check if control mode is enabled for this sprite.
 
         Returns:
-            True if control mode is enabled and supported by this sprite
+            True if control mode is enabled
         """
-        return self.client.control_mode and self._control_mode_supported
+        return self.client.control_mode
 
     async def get_control_connection(self) -> "ControlConnection":
         """Get or create a control connection for multiplexed operations.
