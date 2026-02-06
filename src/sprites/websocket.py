@@ -430,15 +430,20 @@ async def run_ws_command_via_control(cmd: Cmd) -> int:
 
     cc = None
     try:
+        # Double-check control mode is still supported (may have been disabled
+        # by another concurrent command that already got a 404)
+        if not cmd.sprite._control_mode_supported:
+            return await _run_ws_command_direct(cmd)
+
         # Get a control connection from the pool
         cc = await get_control_connection(cmd.sprite)
 
         # Build operation arguments
         args: dict[str, Any] = {"cmd": cmd.args}
 
-        # Add environment variables
+        # Add environment variables (pass dict - start_op converts to list)
         if cmd.env:
-            args["env"] = [f"{k}={v}" for k, v in cmd.env.items()]
+            args["env"] = cmd.env
 
         # Add working directory
         if cmd.dir:
@@ -455,6 +460,21 @@ async def run_ws_command_via_control(cmd: Cmd) -> int:
 
         # Start the exec operation
         op = await cc.start_op("exec", **args)
+
+        # Handle stdin
+        if cmd.stdin is not None:
+            loop = asyncio.get_event_loop()
+            try:
+                while True:
+                    data = await loop.run_in_executor(None, cmd.stdin.read, 4096)
+                    if not data:
+                        break
+                    await op.write(data)
+            except Exception:
+                pass
+            await op.send_eof()
+        else:
+            await op.send_eof()
 
         # Wait for operation to complete
         exit_code = await op.wait()
