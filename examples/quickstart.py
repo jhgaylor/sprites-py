@@ -13,7 +13,7 @@ client = SpritesClient(os.environ["SPRITE_TOKEN"])
 client.create_sprite(os.environ["SPRITE_NAME"])
 
 # step: Run Python
-output = client.sprite(os.environ["SPRITE_NAME"]).command("python", "-c", "print(2+2)").output()
+output = client.sprite(os.environ["SPRITE_NAME"]).command("python", "-c", "print(2+2)", timeout=30).output()
 print(output.decode(), end="")
 
 # step: Clean up

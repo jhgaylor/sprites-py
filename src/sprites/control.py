@@ -645,7 +645,12 @@ def _cleanup_on_exit() -> None:
         return
 
     try:
-        from sprites.loop import get_loop, stop_loop
+        from sprites.loop import get_loop, stop_loop, _loop
+
+        # Don't create a new loop just for cleanup — if the loop was already
+        # stopped by loop.py's atexit handler, just skip cleanup
+        if _loop is None:
+            return
 
         loop = get_loop()
         future = asyncio.run_coroutine_threadsafe(_close_all_pools(), loop)

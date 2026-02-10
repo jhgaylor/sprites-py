@@ -217,9 +217,9 @@ def create_checkpoint(sprite: Sprite, comment: str = "") -> CheckpointStream:
     if comment:
         payload["comment"] = comment
 
-    # Use a separate client for streaming with no timeout
+    # Use a separate client for streaming with a generous timeout
     with httpx.Client(
-        timeout=None,
+        timeout=300.0,
         headers={"Authorization": f"Bearer {sprite.client.token}"},
     ) as client:
         try:
@@ -269,9 +269,9 @@ def restore_checkpoint(sprite: Sprite, checkpoint_id: str) -> RestoreStream:
     """
     url = f"{sprite.client.base_url}/v1/sprites/{sprite.name}/checkpoints/{checkpoint_id}/restore"
 
-    # Use a separate client for streaming with no timeout
+    # Use a separate client for streaming with a generous timeout
     with httpx.Client(
-        timeout=None,
+        timeout=300.0,
         headers={"Authorization": f"Bearer {sprite.client.token}"},
     ) as client:
         try:
