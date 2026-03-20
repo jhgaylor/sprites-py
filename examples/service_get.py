@@ -15,7 +15,7 @@ sprite = client.sprite(sprite_name)
 
 svc = sprite.get_service(service_name)
 
-result = {"name": svc.service.name, "cmd": svc.service.cmd}
+result = {"name": svc.name, "cmd": svc.cmd}
 if svc.state:
     result["status"] = svc.state.status
 

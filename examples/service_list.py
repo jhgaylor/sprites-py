@@ -16,7 +16,7 @@ services = sprite.list_services()
 
 result = []
 for svc in services:
-    item = {"name": svc.service.name, "cmd": svc.service.cmd}
+    item = {"name": svc.name, "cmd": svc.cmd}
     if svc.state:
         item["status"] = svc.state.status
     result.append(item)
