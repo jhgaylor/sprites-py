@@ -390,7 +390,7 @@ class Sprite:
         data = response.json()
         services: List[ServiceWithState] = []
 
-        for s in data.get("services", []):
+        for s in data:
             state = None
             if s.get("state"):
                 state = ServiceState(
