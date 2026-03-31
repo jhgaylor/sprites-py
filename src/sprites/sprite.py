@@ -58,6 +58,7 @@ class Sprite:
         self.primary_region: Optional[str] = None
         self.url: Optional[str] = None
         self.url_settings: Optional[URLSettings] = None
+        self.labels: Optional[List[str]] = None
 
     def _update_from_info(self, info: Dict[str, Any]) -> None:
         """Update sprite properties from API response."""
@@ -67,6 +68,7 @@ class Sprite:
         self.url = info.get("url")
         self.primary_region = info.get("primary_region")
         self.bucket_name = info.get("bucket_name")
+        self.labels = info.get("labels")
 
         if "created_at" in info and info["created_at"]:
             try:

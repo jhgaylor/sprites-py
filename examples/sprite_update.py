@@ -10,6 +10,6 @@ sprite_name = os.environ["SPRITE_NAME"]
 
 client = SpritesClient(token)
 
-client.update_url_settings(sprite_name, URLSettings(auth="public"))
+client.update_sprite(sprite_name, url_settings=URLSettings(auth="public"), labels=["prod"])
 
-print("URL settings updated")
+print("Sprite updated")

@@ -10,6 +10,6 @@ sprite_name = os.environ["SPRITE_NAME"]
 
 client = SpritesClient(token)
 
-client.create_sprite(sprite_name)
+client.create_sprite(sprite_name, labels=["prod"])
 
 print(f"Sprite '{sprite_name}' created")

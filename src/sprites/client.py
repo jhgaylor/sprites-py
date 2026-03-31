@@ -99,7 +99,8 @@ class SpritesClient:
     def create_sprite(
         self,
         name: str,
-        config: Optional[SpriteConfig] = None
+        config: Optional[SpriteConfig] = None,
+        labels: Optional[List[str]] = None,
     ) -> "Sprite":
         """
         Create a new sprite.
@@ -107,6 +108,7 @@ class SpritesClient:
         Args:
             name: Sprite name
             config: Optional configuration
+            labels: Optional labels
 
         Returns:
             Created Sprite instance
@@ -114,6 +116,8 @@ class SpritesClient:
         from .sprite import Sprite
 
         request: Dict[str, Any] = {"name": name}
+        if labels:
+            request["labels"] = labels
         if config:
             request["config"] = {
                 k: v for k, v in {
@@ -299,6 +303,41 @@ class SpritesClient:
             raise NetworkError(f"Network error updating URL settings: {e}")
 
         self._handle_response(response, f"update URL settings for '{name}'")
+
+    def update_sprite(
+        self,
+        name: str,
+        url_settings: Optional[URLSettings] = None,
+        labels: Optional[List[str]] = None,
+        clear_labels: bool = False,
+    ) -> None:
+        """
+        Update sprite settings.
+
+        Args:
+            name: Sprite name
+            url_settings: Optional URL authentication settings
+            labels: Optional labels to apply
+            clear_labels: If True, clear all existing labels before applying new ones
+        """
+        body: Dict[str, Any] = {}
+        if url_settings is not None:
+            body["url_settings"] = {"auth": url_settings.auth}
+        if labels is not None:
+            body["labels"] = labels
+        if clear_labels:
+            body["clear_labels"] = True
+
+        try:
+            response = self._client.put(
+                f"{self.base_url}/v1/sprites/{name}",
+                headers=self._headers(),
+                json=body,
+            )
+        except httpx.RequestError as e:
+            raise NetworkError(f"Network error updating sprite: {e}")
+
+        self._handle_response(response, f"update sprite '{name}'")
 
     @staticmethod
     def create_token(

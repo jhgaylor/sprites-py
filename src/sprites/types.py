@@ -73,6 +73,7 @@ class SpriteInfo:
     primary_region: Optional[str] = None
     url: Optional[str] = None
     url_settings: Optional[URLSettings] = None
+    labels: Optional[List[str]] = None
 
 
 @dataclass
