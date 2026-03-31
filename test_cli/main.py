@@ -123,7 +123,10 @@ def parse_args(argv: List[str]) -> tuple[Dict[str, Any], List[str]]:
     while i < len(argv):
         arg = argv[i]
 
-        if arg == "-base-url":
+        if arg == "-log-target":
+            i += 1
+            # Accepted but ignored; used by the test harness
+        elif arg == "-base-url":
             i += 1
             options["base_url"] = argv[i]
         elif arg == "-sprite":
