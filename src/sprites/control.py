@@ -230,6 +230,7 @@ class ControlConnection:
         self.ws = await websockets.connect(
             url,
             additional_headers=headers,
+            open_timeout=30,  # Allow up to 30s for the opening handshake (default is 10s)
             ping_interval=WS_PING_INTERVAL,
             ping_timeout=WS_PONG_WAIT,
             close_timeout=2,  # Faster close handshake for clean shutdown
