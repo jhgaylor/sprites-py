@@ -147,7 +147,7 @@ class WSCommand:
             raise RuntimeError("WebSocket not connected")
 
         try:
-            async with asyncio.timeout(10):
+            async with asyncio.timeout(30):
                 async for message in self.ws:
                     if isinstance(message, str):
                         try:
