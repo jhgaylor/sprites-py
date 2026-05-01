@@ -58,7 +58,10 @@ class Cmd:
             tty: Enable TTY/pseudo-terminal mode.
             tty_rows: Terminal height (rows).
             tty_cols: Terminal width (columns).
-            session_id: Attach to existing session instead of creating new one.
+            session_id: Attach to an existing session instead of creating a new one.
+                For new sessions, this attribute is populated by the SDK from the
+                server's session_info message after the WebSocket connects, so callers
+                can later reattach via sprite.attach_session(cmd.session_id).
             timeout: Command timeout in seconds.
         """
         self.sprite = sprite

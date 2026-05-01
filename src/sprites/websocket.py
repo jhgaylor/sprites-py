@@ -238,12 +238,36 @@ class WSCommand:
                 except Exception:
                     pass
 
+    def _maybe_capture_session_info(self, message: str) -> None:
+        """Capture session_id from a session_info text message.
+
+        The server sends a session_info message after the WebSocket connects, both
+        for new exec sessions and for attaches. For new sessions the message carries
+        the server-assigned session_id, which callers need in order to later reattach
+        via sprite.attach_session(...). This populates cmd.session_id once.
+
+        On attaches, cmd.session_id is already set by the caller and is left unchanged
+        (the server's echo of the same value is a no-op).
+        """
+        if self.cmd.session_id is not None:
+            return
+        try:
+            info = json.loads(message)
+        except (json.JSONDecodeError, ValueError):
+            return
+        if not isinstance(info, dict) or info.get("type") != "session_info":
+            return
+        sid = info.get("session_id")
+        if sid is not None:
+            self.cmd.session_id = str(sid)
+
     async def _handle_message(self, message: str | bytes) -> None:
         """Handle incoming WebSocket message."""
         if self.cmd.tty:
             # TTY mode
             if isinstance(message, str):
                 # Text message - control/notification
+                self._maybe_capture_session_info(message)
                 if self.text_message_handler:
                     self.text_message_handler(message.encode())
             else:
@@ -255,6 +279,7 @@ class WSCommand:
             # Non-TTY mode - stream-based protocol
             if isinstance(message, str):
                 # Text messages are control/notifications
+                self._maybe_capture_session_info(message)
                 if self.text_message_handler:
                     self.text_message_handler(message.encode())
                 return
