@@ -131,15 +131,21 @@ class WSCommand:
             # Fall back to original exception
             raise
 
-        # Start I/O loop in background IMMEDIATELY after connect
-        # This must happen before any other awaits to avoid missing messages
+        # When attaching to an existing session, drain the session_info text
+        # frame BEFORE starting the I/O loop. Both `_wait_for_session_info`
+        # and `_run_io` iterate `async for message in self.ws`, and the
+        # `websockets` library does not support concurrent reads on the same
+        # connection — running them in parallel splits messages between the
+        # two coroutines unpredictably, causing live binary frames (stdout/
+        # stderr/exit) on the attach side to be silently dropped.
+        if self._is_attach:
+            await self._wait_for_session_info()
+
+        # Start I/O loop in background IMMEDIATELY after connect (or after
+        # session_info has been drained on attach).
         self._io_task = asyncio.create_task(self._run_io())
         # Yield to let the I/O task start reading before we return
         await asyncio.sleep(0)
-
-        # When attaching to an existing session, wait for session_info to determine TTY mode
-        if self._is_attach:
-            await self._wait_for_session_info()
 
     async def _wait_for_session_info(self) -> None:
         """Wait for session_info message when attaching."""
