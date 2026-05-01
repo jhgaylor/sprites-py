@@ -114,6 +114,11 @@ class WSCommand:
                 ping_interval=WS_PING_INTERVAL,
                 ping_timeout=WS_PONG_WAIT,
                 max_size=10 * 1024 * 1024,  # 10MB max message size
+                # The server holds the WS open for ~5s after sending EXIT
+                # before initiating its own close. Without an explicit
+                # close_timeout we'd block in `await ws.close()` waiting for
+                # the server's reply, adding ~5s to every exec. See #24.
+                close_timeout=0.5,
             )
         except InvalidStatusCode as e:
             # Try to parse as a structured API error
